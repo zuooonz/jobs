@@ -74,7 +74,16 @@ function App() {
   const jobListRef = useRef(null);
   const touchStartRef = useRef(null);
 
+  const isGithubPages = window.location.hostname.endsWith('github.io');
+
   const fetchJobs = async () => {
+    if (isGithubPages) {
+      console.info('GitHub Pages detected. Using static demo jobs.');
+      setJobs(demoJobs);
+      setIsDemo(true);
+      return;
+    }
+
     try {
       const response = await fetch(`${API_BASE_URL}/api/jobs`);
       if (!response.ok) throw new Error('Network response not ok');
@@ -93,15 +102,18 @@ function App() {
       const response = await fetch(`${API_BASE_URL}/api/config`);
       if (!response.ok) throw new Error('Network response not ok');
       const data = await response.json();
-      setConfig(data);
-      if (data.clusters && Object.keys(data.clusters).length > 0) {
-        setActiveCluster(Object.keys(data.clusters)[0]);
+      // Normalize: flatten 'ui' property if it exists
+      const normalized = data.ui ? { ...data, ...data.ui } : data;
+      setConfig(normalized);
+      if (normalized.clusters && Object.keys(normalized.clusters).length > 0) {
+        setActiveCluster(Object.keys(normalized.clusters)[0]);
       }
     } catch (error) {
       console.warn('Backend reaches failed. Falling back to Demo Mode config.');
-      setConfig(demoConfig);
-      if (demoConfig.clusters && Object.keys(demoConfig.clusters).length > 0) {
-        setActiveCluster(Object.keys(demoConfig.clusters)[0]);
+      const normalized = demoConfig.ui ? { ...demoConfig, ...demoConfig.ui } : demoConfig;
+      setConfig(normalized);
+      if (normalized.clusters && Object.keys(normalized.clusters).length > 0) {
+        setActiveCluster(Object.keys(normalized.clusters)[0]);
       }
     }
   };
