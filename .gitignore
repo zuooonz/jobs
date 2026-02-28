@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+config.json
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment
+.env
+
+# Logs
+*.log
+backend/backend.log
+
+# Database backups & exports
+*.sql
+*.csv
+
+# Local state & profile
+chrome_profile/
+.jobs_state.json
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project metadata
+.DS_Store

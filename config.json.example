@@ -1,0 +1,86 @@
+{
+    "filter": {
+        "black_keywords": [
+            "销售",
+            "管培生",
+            "电销",
+            "应届",
+            "电商",
+            "直播",
+            "行政",
+            "前台"
+        ],
+        "min_salary": 15,
+        "target_cities": [
+            "北京",
+            "上海",
+            "深圳",
+            "全国",
+            "不限",
+            "远程"
+        ]
+    },
+    "evaluator": {
+        "hard_blacklist": [
+            "客服",
+            "保安",
+            "保洁"
+        ],
+        "prompt_template": "作为一个资深HR专家，请根据以下候选人的画像，评估该招聘岗位的匹配度。\n\n### 候选人画像 ###\n{profile_text}\n\n### 目标岗位信息 ###\n岗位名称: {job_title}\n公司名称: {job_company}\n薪资范围: {job_salary}\n职位描述:\n{job_desc}\n\n### 评估要求 ###\n请根据候选人的背景与岗位要求的契合度，给出 0-100 的综合评分，并提供简要理由。\n\n### 输出格式 ###\n请返回合法的 JSON 对象，不要包含 Markdown 标记。\n{{\n  \"analysis\": \"对岗位要求的深度解析...\",\n  \"score\": 评分数值,\n  \"reason\": \"简短的打分理由\"\n}}",
+        "user_profile_paths": [
+            "~/path/to/your/intention.md",
+            "~/path/to/your/resume.md"
+        ]
+    },
+    "ui": {
+        "clusters": {
+            "1_AI_ENGINEERING": "AI 基础设施与工程化",
+            "2_DATA_SCIENCE": "数据科学与算法研究",
+            "3_PRODUCT_MNG": "产品设计与用户体验",
+            "4_STRATEGIC_ANLYS": "行业分析与战略决策",
+            "5_OTHER": "其他探索方向"
+        },
+        "categorization_rules": [
+            {
+                "id": "1_AI_ENGINEERING",
+                "keywords": ["infra", "架构", "工程", "agent", "ops"]
+            },
+            {
+                "id": "2_DATA_SCIENCE",
+                "keywords": ["数据", "算法", "模型", "研究"]
+            },
+            {
+                "id": "3_PRODUCT_MNG",
+                "keywords": ["产品", "体验", "交互", "设计"]
+            },
+            {
+                "id": "4_STRATEGIC_ANLYS",
+                "keywords": ["战略", "分析", "咨询", "研究"]
+            }
+        ]
+    },
+    "tools": {
+        "obsidian": {
+            "threshold": 80
+        },
+        "resume_tailor": {
+            "prompt_template": "作为一个顶级的猎头专家，请根据以下候选人的【基础简历】和【目标岗位JD】，为该岗位量身定制一份精修版简历。\n\n### 候选人基础简历 ###\n{profile_text}\n\n### 目标岗位信息 ###\n岗位名称: {job_title}\n公司名称: {job_company}\n职位描述:\n{job_desc}\n\n### 任务要求 ###\n1. 突出与 JD 相关的项目经验。\n2. 使用行业专业术语重写。\n3. 结构清晰，包含总结、经历和技能。\n\n请直接输出 Markdown 格式的简历。"
+        }
+    },
+    "insights": {
+        "1_AI_ENGINEERING": "> [!abstract] 核心优势：系统级架构与工程交付\n> **建议**：突出你在 RAG 和 Agent 开发中的实战经验。",
+        "2_DATA_SCIENCE": "> [!abstract] 核心优势：深度学习与数据洞察\n> **建议**：强调你在复杂数据集上的建模与分析能力。",
+        "3_PRODUCT_MNG": "> [!abstract] 核心优势：用户导向的产品定义\n> **建议**：结合数据反馈，展示你对用户需求的敏锐洞察。",
+        "4_STRATEGIC_ANLYS": "> [!abstract] 核心优势：宏观视角的行业决策\n> **建议**：体现你对市场趋势的系统化思考。"
+    },
+    "scraper": {
+        "keywords": [
+            "AI算法工程师",
+            "LLM 研究员",
+            "数据科学家",
+            "产品经理"
+        ],
+        "batch_size": 10,
+        "city": "010"
+    }
+}
