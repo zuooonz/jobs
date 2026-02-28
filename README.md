@@ -6,7 +6,7 @@ This project is a result of a **"Vibe Coding"** experiment—a deep collaboratio
 ---
 
 ## 🧪 Live Demo
-[点击查看在线演示网页](https://your-username.github.io/your-repo-name/)
+[点击查看在线演示网页](https://zuooonz.github.io/jobs/)
 
 A comprehensive toolset for scraping, evaluating, and visualizing job opportunities from Liepin.com, powered by Local LLMs (Ollama/vLLM) for intelligent scoring.
 
