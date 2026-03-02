@@ -239,9 +239,8 @@ body {
 }
 
 .filter-tab {
-  padding: 12px 0;
-  font-size: 0.9375rem;
-  /* 15px */
+  padding: 4px 0;
+  font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-secondary);
   cursor: pointer;
@@ -268,6 +267,48 @@ body {
   height: 4px;
   background: var(--accent);
   border-radius: 99px;
+}
+
+.filter-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  padding: 0 4px;
+  margin-top: 12px;
+}
+
+.filter-group-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+  display: block;
+}
+
+.custom-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  outline: none;
+}
+
+.custom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.custom-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
 }
 
 /* Job Card Styling - Glassmorphism */

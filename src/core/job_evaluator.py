@@ -38,6 +38,13 @@ MODEL_CONFIGS = {
         "model_name": os.getenv("QWEN_MODEL_NAME", "Qwen/Qwen3-8B-AWQ"),
         "score_col": "match_score_qwen3_8b",
         "rationale_col": "rationale_qwen3_8b"
+    },
+    "glm5": {
+        "api_base": os.getenv("GLM_API_BASE", "https://coding.dashscope.aliyuncs.com/v1"),
+        "api_key": os.getenv("GLM_API_KEY", ""),
+        "model_name": os.getenv("GLM_MODEL_NAME", "glm-5"),
+        "score_col": "match_score_glm5",
+        "rationale_col": "rationale_glm5"
     }
 }
 
@@ -198,7 +205,7 @@ def apply_static_filters_globally(conn):
 def main():
     parser = argparse.ArgumentParser(description="Evaluate jobs using local LLM")
     parser.add_argument("--test-run", type=int, default=0, help="Evaluate N jobs for testing")
-    parser.add_argument("--model", type=str, default="qwen3_8b", choices=["gemma3", "qwen3_8b"], help="Select evaluation model")
+    parser.add_argument("--model", type=str, default="glm5", choices=["gemma3", "qwen3_8b", "glm5"], help="Select evaluation model")
     args = parser.parse_args()
 
     config = MODEL_CONFIGS[args.model]

@@ -47,19 +47,23 @@ def get_config():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/jobs")
-def get_jobs(threshold: int = 80):
+def get_jobs(threshold: int = 75, model: str = "glm5"):
     try:
+        # Default to GLM-5 since user wants to simplify
+        score_col = "match_score_glm5"
+        rationale_col = "rationale_glm5"
+        
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, title, company, salary, location, 
-                   match_score_qwen3_8b, rationale_qwen3_8b,
+                   {score_col}, {rationale_col},
                    link, update_time, job_description,
                    user_score, user_notes
             FROM liepin_jobs
-            WHERE match_score_qwen3_8b >= %s
+            WHERE {score_col} >= %s
               AND job_description NOT LIKE '[UNAVAILABLE%%'
-            ORDER BY match_score_qwen3_8b DESC, update_time DESC NULLS LAST
+            ORDER BY {score_col} DESC, update_time DESC NULLS LAST
         """, (threshold,))
         
         jobs = []

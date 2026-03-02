@@ -41,3 +41,6 @@ dist-ssr/
 
 # Project metadata
 .DS_Store
+
+# Internal documentation (Not for git)
+docs/

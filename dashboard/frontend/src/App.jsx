@@ -51,138 +51,132 @@ const Icons = {
   ),
   Close: () => (
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+  ),
+  Mail: () => (
+    <svg width="1.2em" height="1.2em" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>
   )
 };
 
 // API Configuration
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8888`;
+// If current hostname is NOT localhost, we should probably prefer it over the env-configured localhost
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL && !import.meta.env.VITE_API_BASE_URL.includes('localhost'))
+  ? import.meta.env.VITE_API_BASE_URL
+  : `http://${window.location.hostname}:8888`;
 
 function App() {
   const [jobs, setJobs] = useState([]);
   const [config, setConfig] = useState({ clusters: {}, categorization_rules: [] });
   const [isDemo, setIsDemo] = useState(false);
   const [activeCluster, setActiveCluster] = useState("");
-  const [activeTier, setActiveTier] = useState("1_HIGHLY_ACTIVE");
+  const [activeTier, setActiveTier] = useState("");
   const [statusFilter, setStatusFilter] = useState('all');
+  const [scoreThreshold, setScoreThreshold] = useState(75);
+  const [scoreSource, setScoreSource] = useState('glm5');
+  const [sortOrder, setSortOrder] = useState('desc');
   const [expandAll, setExpandAll] = useState(window.innerWidth > 768);
+  const [connectionError, setConnectionError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [overscrollOffset, setOverscrollOffset] = useState(0);
-  const [dragOffset, setDragOffset] = useState(0);
 
   const contentRef = useRef(null);
   const jobListRef = useRef(null);
   const touchStartRef = useRef(null);
+  const debounceTimerRef = useRef(null);
 
   const isGithubPages = window.location.hostname.endsWith('github.io');
 
+  // Helper for fetch with timeout
+  const fetchWithTimeout = async (resource, options = {}) => {
+    const { timeout = 5000 } = options;
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    try {
+      const resp = await fetch(resource, {
+        ...options,
+        signal: controller.signal
+      });
+      clearTimeout(id);
+      return resp;
+    } catch (err) {
+      clearTimeout(id);
+      throw err;
+    }
+  };
+
   const fetchJobs = async () => {
     if (isGithubPages) {
-      console.info('GitHub Pages detected. Using static demo jobs.');
       setJobs(demoJobs);
       setIsDemo(true);
       return;
     }
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/jobs`);
+      setLoading(true);
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/jobs?threshold=${scoreThreshold}&model=${scoreSource}`);
       if (!response.ok) throw new Error('Network response not ok');
       const data = await response.json();
       setJobs(data);
       setIsDemo(false);
+      setConnectionError(false);
     } catch (error) {
-      console.warn('Backend reach failed. Falling back to Demo Mode data.');
+      console.warn('Backend reach failed. Falling back to offline data.');
       setJobs(demoJobs);
-      setIsDemo(true);
+      setIsDemo(true); // Show Demo banner even in local mode if backend is unreachable
+      setConnectionError(true);
+    } finally {
+      setLoading(false);
     }
   };
 
   const fetchConfig = async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/config`);
-      if (!response.ok) throw new Error('Network response not ok');
-      const data = await response.json();
-      // Normalize: flatten 'ui' property if it exists
-      const normalized = data.ui ? { ...data, ...data.ui } : data;
-      setConfig(normalized);
-      if (normalized.clusters && Object.keys(normalized.clusters).length > 0) {
-        setActiveCluster(Object.keys(normalized.clusters)[0]);
-      }
-    } catch (error) {
-      console.warn('Backend reaches failed. Falling back to Demo Mode config.');
+    if (isGithubPages) {
       const normalized = demoConfig.ui ? { ...demoConfig, ...demoConfig.ui } : demoConfig;
       setConfig(normalized);
-      if (normalized.clusters && Object.keys(normalized.clusters).length > 0) {
-        setActiveCluster(Object.keys(normalized.clusters)[0]);
-      }
+      return;
+    }
+
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/config`);
+      if (!response.ok) throw new Error('Network response not ok');
+      const data = await response.json();
+      const normalized = data.ui ? { ...data, ...data.ui } : data;
+      setConfig(normalized);
+    } catch (error) {
+      console.warn('Backend reaches failed. Falling back to local demo config.');
+      const normalized = demoConfig.ui ? { ...demoConfig, ...demoConfig.ui } : demoConfig;
+      setConfig(normalized);
+      setIsDemo(true);
     }
   };
 
   const initialize = async () => {
+    console.log('Initializing app...');
     setLoading(true);
-    await Promise.all([fetchJobs(), fetchConfig()]);
-    setLoading(false);
+    setConnectionError(false);
+
+    try {
+      await Promise.all([fetchJobs(), fetchConfig()]);
+    } catch (err) {
+      console.error('Initialization error:', err);
+    } finally {
+      console.log('Initialization complete.');
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     initialize();
   }, []);
-  const handleTouchStart = (e) => {
-    if (window.innerWidth > 768) return;
-    touchStartRef.current = {
-      x: e.touches[0].clientX,
-      y: e.touches[0].clientY,
-      scrollLeft: jobListRef.current ? jobListRef.current.scrollLeft : 0
-    };
-  };
 
-  const handleTouchMove = (e) => {
-    if (!touchStartRef.current || window.innerWidth > 768) return;
+  // Effect to handle dynamic updates for source/threshold
+  useEffect(() => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      fetchJobs();
+    }, 400);
+  }, [scoreSource, scoreThreshold]);
 
-    const deltaX = e.touches[0].clientX - touchStartRef.current.x;
-    const deltaY = e.touches[0].clientY - touchStartRef.current.y;
-
-    // Favor vertical scroll if it's more vertical than horizontal
-    if (Math.abs(deltaY) > Math.abs(deltaX) + 10) {
-      setDragOffset(0);
-      setOverscrollOffset(0);
-      return;
-    }
-
-    const scrollLeft = touchStartRef.current.scrollLeft;
-    const clientWidth = jobListRef.current.clientWidth;
-    const scrollWidth = jobListRef.current.scrollWidth;
-    const isAtStart = scrollLeft <= 5;
-    const isAtEnd = scrollLeft + clientWidth >= scrollWidth - 5;
-
-    let nextDrag = 0;
-    let nextOverscroll = 0;
-
-    if (isAtStart && deltaX > 0) {
-      // Swiping right at the start - Rubber band + Sidebar trigger
-      nextDrag = deltaX * 0.4;
-      if (deltaX > 100) {
-        setIsSidebarOpen(true);
-        touchStartRef.current = null;
-        setDragOffset(0);
-        setOverscrollOffset(0);
-        return;
-      }
-    } else if (isAtEnd && deltaX < 0) {
-      // Swiping left at the end - Rubber band + "No more" hint
-      nextDrag = deltaX * 0.4;
-      nextOverscroll = Math.abs(deltaX);
-    }
-
-    setDragOffset(nextDrag);
-    setOverscrollOffset(nextOverscroll);
-  };
-
-  const handleTouchEnd = () => {
-    touchStartRef.current = null;
-    setOverscrollOffset(0);
-    setDragOffset(0);
-  };
+  // Placeholder for future stable mobile interactions
 
   // Dynamic categorization logic
   const smartCategorize = useCallback((title, jd) => {
@@ -226,9 +220,9 @@ function App() {
   }, [jobs, smartCategorize, categorizeActivity]);
 
   const filteredJobs = useMemo(() => {
-    return processedJobs.filter(job => {
-      const clusterMatch = job._cluster === activeCluster;
-      const tierMatch = activeTier === 'all' || job._tier === activeTier;
+    let result = processedJobs.filter(job => {
+      const clusterMatch = !activeCluster || job._cluster === activeCluster;
+      const tierMatch = !activeTier || activeTier === 'all' || job._tier === activeTier;
 
       if (!(clusterMatch && tierMatch)) return false;
 
@@ -236,7 +230,13 @@ function App() {
       if (statusFilter === 'unrated') return !job._isRated;
       return true;
     });
-  }, [processedJobs, activeCluster, activeTier, statusFilter]);
+
+    // Apply Client-side sorting
+    return [...result].sort((a, b) => {
+      if (sortOrder === 'desc') return (b.score || 0) - (a.score || 0);
+      return (a.score || 0) - (b.score || 0);
+    });
+  }, [processedJobs, activeCluster, activeTier, statusFilter, sortOrder]);
 
   // Handle local feedback updates
   const handleLocalUpdate = useCallback((jobId, newScore, newNotes) => {
@@ -246,43 +246,17 @@ function App() {
   }, []);
 
   // Effects (defined after dependencies)
-  useEffect(() => {
-    fetchJobs();
-  }, []);
 
   useEffect(() => {
     if (contentRef.current) {
       contentRef.current.scrollTo(0, 0);
     }
     if (jobListRef.current) {
-      jobListRef.current.scrollTo(0, 0); // Reset horizontal scroll for mobile
+      jobListRef.current.scrollTo(0, 0); // Reset for mobile horizontal snap context
     }
   }, [activeCluster, activeTier, statusFilter]);
 
-  useEffect(() => {
-    if (!loading && processedJobs.length > 0) {
-      // Check if current cluster + tier selection has data
-      const currentCount = processedJobs.filter(j => {
-        const clusterMatch = j._cluster === activeCluster;
-        const tierMatch = activeTier === 'all' || j._tier === activeTier;
-        return clusterMatch && tierMatch;
-      }).length;
-
-      // Only auto-switch if the current view is empty
-      if (currentCount === 0) {
-        for (const clusterId of Object.keys(config.clusters || {})) {
-          for (const tierId of Object.keys(ACTIVITY_TIERS)) {
-            const hasData = processedJobs.some(j => j._cluster === clusterId && j._tier === tierId);
-            if (hasData) {
-              setActiveCluster(clusterId);
-              setActiveTier(tierId);
-              return;
-            }
-          }
-        }
-      }
-    }
-  }, [loading, processedJobs, activeCluster, activeTier]);
+  // Removed auto-selection effect to respect "Show All" default
 
   return (
     <>
@@ -305,9 +279,13 @@ function App() {
                 <div
                   className={`nav-group-title ${activeCluster === clusterId && activeTier === 'all' ? 'active' : ''}`}
                   onClick={() => {
-                    setActiveCluster(clusterId);
-                    setActiveTier('all');
-                    setStatusFilter('all');
+                    if (activeCluster === clusterId && (activeTier === 'all' || activeTier === '')) {
+                      setActiveCluster("");
+                      setActiveTier("");
+                    } else {
+                      setActiveCluster(clusterId);
+                      setActiveTier('all');
+                    }
                   }}
                   style={{ cursor: 'pointer', transition: 'color 0.2s' }}
                 >
@@ -323,9 +301,13 @@ function App() {
                       key={tierId}
                       className={`nav-sub-item ${activeCluster === clusterId && activeTier === tierId ? 'active' : ''}`}
                       onClick={() => {
-                        setActiveCluster(clusterId);
-                        setActiveTier(tierId);
-                        setStatusFilter('all');
+                        if (activeCluster === clusterId && activeTier === tierId) {
+                          setActiveCluster("");
+                          setActiveTier("");
+                        } else {
+                          setActiveCluster(clusterId);
+                          setActiveTier(tierId);
+                        }
                         setIsSidebarOpen(false); // Close on mobile selection
                       }}
                     >
@@ -341,9 +323,30 @@ function App() {
           <div className="sidebar-filters-mobile" style={{ marginTop: '24px', borderTop: '1px solid var(--border)', paddingTop: '24px' }}>
             <div style={{ padding: '0 16px', marginBottom: '16px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 700 }}>展示设置</div>
 
-            <div className="filter-group" style={{ padding: '0 16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div className="filter-group" style={{ padding: '0 16px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {/* Mobile Score Filter */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>模型评分</span>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--accent)' }}>{scoreThreshold}+</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  className="custom-slider"
+                  value={scoreThreshold}
+                  onChange={(e) => setScoreThreshold(parseInt(e.target.value))}
+                  style={{
+                    width: '100%',
+                    margin: 0,
+                    background: `linear-gradient(to right, var(--accent) ${scoreThreshold}%, rgba(255, 255, 255, 0.1) ${scoreThreshold}%)`
+                  }}
+                />
+              </div>
+
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>数据筛选</span>
+                <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>人工评分</span>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   {['all', 'unrated', 'rated'].map(f => (
                     <button
@@ -351,14 +354,14 @@ function App() {
                       className={`filter-btn-mobile ${statusFilter === f ? 'active' : ''}`}
                       onClick={() => setStatusFilter(f)}
                     >
-                      {f === 'all' ? '全部' : f === 'unrated' ? '未评分' : '已评分'}
+                      {f === 'all' ? '全部' : f === 'unrated' ? '未处理' : '已评分'}
                     </button>
                   ))}
                 </div>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>内容折叠</span>
+                <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>视图模式</span>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button className={`filter-btn-mobile ${!expandAll ? 'active' : ''}`} onClick={() => setExpandAll(false)}>全部收起</button>
                   <button className={`filter-btn-mobile ${expandAll ? 'active' : ''}`} onClick={() => setExpandAll(true)}>全部展开</button>
@@ -378,6 +381,14 @@ function App() {
             </div>
           </div>
         )}
+        {connectionError && !isGithubPages && (
+          <div className="demo-banner" style={{ background: 'rgba(239, 68, 68, 0.1)', borderColor: '#ef4444' }}>
+            <div className="demo-banner-content">
+              <span className="demo-tag" style={{ background: '#ef4444' }}>OFFLINE</span>
+              <p>无法连接到本地后端。当前显示的是本地缓存的演示数据。</p>
+            </div>
+          </div>
+        )}
         <div className="header">
           <div className="mobile-header">
             <button className="menu-toggle" onClick={() => setIsSidebarOpen(true)}>
@@ -387,35 +398,69 @@ function App() {
           </div>
           <div className="header-controls">
             <div>
-              <h1>{config.clusters ? config.clusters[activeCluster] : '加载中...'}</h1>
+              <h1>{(config.clusters && activeCluster) ? config.clusters[activeCluster] : '所有岗位'}</h1>
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                {activeTier === 'all' ? '全部活跃度' : ACTIVITY_TIERS[activeTier].title} · 当前显示 {filteredJobs.length} 项
+                {(!activeTier || activeTier === 'all' || !ACTIVITY_TIERS[activeTier]) ? '全部活跃度' : ACTIVITY_TIERS[activeTier].title} · 当前显示 {filteredJobs.length} 项
               </p>
             </div>
-            <div className="filter-tabs">
-              {['all', 'unrated', 'rated'].map(f => (
-                <div
-                  key={f}
-                  className={`filter-tab ${statusFilter === f ? 'active' : ''}`}
-                  onClick={() => setStatusFilter(f)}
-                >
-                  {f === 'all' ? '全部' : f === 'unrated' ? '未评分' : '已评分'}
-                </div>
-              ))}
-              <div style={{ width: '1px', height: '24px', background: 'var(--border)', margin: '0 8px' }} />
-              <div
-                className="filter-tab"
-                onClick={() => setExpandAll(false)}
-                style={{ color: !expandAll ? 'var(--text-primary)' : 'var(--text-secondary)', fontWeight: !expandAll ? 700 : 500 }}
-              >
-                全部收起
+
+            <div className="filters-section" style={{
+              marginTop: '16px',
+              padding: '12px 24px',
+              background: 'rgba(255, 255, 255, 0.02)',
+              borderRadius: '16px',
+              border: '1px solid rgba(255, 255, 255, 0.05)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '32px',
+              flexWrap: 'wrap'
+            }}>
+              {/* Score Slider */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span className="filter-group-label" style={{ margin: 0, fontSize: '0.7rem', textTransform: 'none', letterSpacing: 'normal' }}>模型评分</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  className="custom-slider"
+                  value={scoreThreshold}
+                  onChange={(e) => setScoreThreshold(parseInt(e.target.value))}
+                  style={{
+                    width: '100px',
+                    margin: 0,
+                    background: `linear-gradient(to right, var(--accent) ${scoreThreshold}%, rgba(255, 255, 255, 0.1) ${scoreThreshold}%)`
+                  }}
+                />
+                <span style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--accent)', minWidth: '32px' }}>{scoreThreshold}+</span>
               </div>
-              <div
-                className="filter-tab"
-                onClick={() => setExpandAll(true)}
-                style={{ color: expandAll ? 'var(--text-primary)' : 'var(--text-secondary)', fontWeight: expandAll ? 700 : 500 }}
-              >
-                全部展开
+
+              <div style={{ width: '1px', height: '16px', background: 'var(--border)', opacity: 0.2 }}></div>
+
+              {/* Status Tabs */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span className="filter-group-label" style={{ margin: 0, fontSize: '0.7rem' }}>人工评分</span>
+                <div className="filter-tabs" style={{ marginTop: 0, gap: '16px' }}>
+                  {['all', 'unrated', 'rated'].map(f => (
+                    <div
+                      key={f}
+                      className={`filter-tab ${statusFilter === f ? 'active' : ''}`}
+                      onClick={() => setStatusFilter(f)}
+                      style={{ fontSize: '0.8rem', padding: '4px 0' }}
+                    >
+                      {f === 'all' ? '全部' : f === 'unrated' ? '未处理' : '已评分'}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ width: '1px', height: '16px', background: 'var(--border)', opacity: 0.2 }}></div>
+
+              {/* View Tabs */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginLeft: 'auto' }}>
+                <div className="filter-tabs" style={{ marginTop: 0, gap: '16px' }}>
+                  <div className={`filter-tab ${!expandAll ? 'active' : ''}`} onClick={() => setExpandAll(false)} style={{ fontSize: '0.8rem', padding: '4px 0' }}>收起</div>
+                  <div className={`filter-tab ${expandAll ? 'active' : ''}`} onClick={() => setExpandAll(true)} style={{ fontSize: '0.8rem', padding: '4px 0' }}>展开</div>
+                </div>
               </div>
             </div>
           </div>
@@ -426,13 +471,6 @@ function App() {
             <div
               className="job-list"
               ref={jobListRef}
-              onTouchStart={handleTouchStart}
-              onTouchMove={handleTouchMove}
-              onTouchEnd={handleTouchEnd}
-              style={{
-                transform: `translate3d(${dragOffset}px, 0, 0)`,
-                transition: dragOffset === 0 ? 'transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275)' : 'none'
-              }}
             >
               {filteredJobs.length === 0 ? (
                 <div style={{ color: 'var(--text-secondary)', marginTop: '40px', textAlign: 'center' }}>
@@ -450,21 +488,7 @@ function App() {
               )}
             </div>
 
-            {/* Overscroll Hint - outside the translated list */}
-            <div
-              className="overscroll-hint"
-              style={{
-                right: overscrollOffset > 0 ? `${Math.min(20, overscrollOffset / 4)}px` : '-100px',
-                opacity: overscrollOffset > 0 ? Math.min(1, overscrollOffset / 100) : 0,
-                transform: `translateY(-50%) translateX(${overscrollOffset > 40 ? 0 : 20}px)`,
-                top: '50%',
-                position: 'absolute'
-              }}
-            >
-              <div className="hint-pill">
-                <span>没有更多啦</span>
-              </div>
-            </div>
+            {/* Removed redundant overscroll hint to favor native UI feel */}
           </div>
         )}
       </div>
@@ -588,6 +612,15 @@ function JobItem({ job, onUpdate, expandAll }) {
     }, 100);
   };
 
+  const handleContacted = () => {
+    const tag = "【已联系】";
+    if (notes.startsWith(tag)) return;
+    const newNotes = tag + notes;
+    setNotes(newNotes);
+    setShowNotes(true);
+    saveFeedback(userScore, newNotes);
+  };
+
   const handleNoteChange = (e) => {
     const val = e.target.value;
     setNotes(val);
@@ -611,8 +644,18 @@ function JobItem({ job, onUpdate, expandAll }) {
   const splitRationale = (rationale) => {
     if (!rationale) return { conclusion: "尚未分析", details: "" };
 
-    // Remove metrics block [hard_indicators:...]
+    // Remove metrics block [hard_indicators:...] if present
     let text = rationale.replace(/\[.*?\]/g, '').trim();
+
+    // GLM5 might just return a direct reason without "思考:" or "总结:" prefixes
+    // If it contains "领域契合:", treat it as the conclusion
+    if (text.includes('领域契合:')) {
+      const parts = text.split(';');
+      return {
+        conclusion: parts[0].trim(),
+        details: parts.slice(1).join('; ').trim()
+      };
+    }
 
     // Normalize punctuation
     text = text.replace(/：/g, ':').replace(/，/g, ',');
@@ -717,12 +760,12 @@ function JobItem({ job, onUpdate, expandAll }) {
 
         {metrics && (
           <div className="score-line">
-            指标: 硬标 {getCircles(metrics.hard, 20)} | 领域 {getCircles(metrics.domain, 30)} | 技术 {getCircles(metrics.tech, 30)} | 项目 {getCircles(metrics.project, 20)}
+            指标: 硬标 {getCircles(metrics.hard, 20)} | 领域 {getCircles(metrics.domain, 40)} | 技术 {getCircles(metrics.tech, 20)} | 项目 {getCircles(metrics.project, 20)}
           </div>
         )}
 
         <div className="callout-header" style={{ marginBottom: '8px', fontSize: '0.85rem', color: '#fff', fontWeight: 700 }}>
-          Qwen 8B 评分：{job.score} 分
+          GLM-5 评分：{job.score} 分
         </div>
         <div className="callout">
           <div className="callout-body">
@@ -740,13 +783,33 @@ function JobItem({ job, onUpdate, expandAll }) {
         </div>
       </div>
 
-      <div className="feedback-actions">
+      <div className="feedback-actions" style={{ alignItems: 'flex-end' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <span className="rating-label" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>星级评分</span>
-          <HeartRating value={userScore} onChange={handleStarChange} onLongPress={handleLongPress} />
+          <span className="rating-label" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>人工评分</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <HeartRating value={userScore} onChange={handleStarChange} onLongPress={handleLongPress} />
+            <div style={{ width: '1px', height: '18px', background: 'var(--border)', opacity: 0.6, margin: '0 4px' }}></div>
+            <div
+              className={`contacted-btn ${notes.startsWith('【已联系】') ? 'active' : ''}`}
+              onClick={handleContacted}
+              title="标记为已联系"
+              style={{
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.2s',
+                color: notes.startsWith('【已联系】') ? 'var(--accent)' : 'rgba(255, 255, 255, 0.1)',
+                fontSize: '1.8rem',
+                lineHeight: 1
+              }}
+            >
+              <Icons.Mail />
+            </div>
+          </div>
         </div>
         {(showNotes || window.innerWidth > 768) && (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px', justifyContent: 'flex-end' }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <input
               type="text"
               className="user-note-input"
