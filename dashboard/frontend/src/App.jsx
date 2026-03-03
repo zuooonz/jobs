@@ -240,7 +240,7 @@ function App() {
       if (sortOrder === 'desc') return (b.score || 0) - (a.score || 0);
       return (a.score || 0) - (b.score || 0);
     });
-  }, [processedJobs, activeCluster, activeTier, statusFilter, sortOrder]);
+  }, [processedJobs, activeCluster, activeTier, statusFilter, sortOrder, isDemo, scoreThreshold]);
 
   // Handle local feedback updates
   const handleLocalUpdate = useCallback((jobId, newScore, newNotes) => {
@@ -564,7 +564,7 @@ function HeartRating({ value, onChange, onLongPress }) {
 }
 
 // Memoize JobItem to prevent massive redundant re-renders on every global state update
-const JobItem = React.memo(({ job, onUpdate, expandAll, scoreSource }) => {
+const JobItem = React.memo(({ job, onUpdate, expandAll, scoreSource = 'glm5' }) => {
   const [userScore, setUserScore] = useState(job.user_score ? job.user_score / 20 : null);
   const [notes, setNotes] = useState(job.user_notes || '');
   const [showJD, setShowJD] = useState(expandAll);
@@ -778,7 +778,7 @@ const JobItem = React.memo(({ job, onUpdate, expandAll, scoreSource }) => {
         )}
 
         <div className="callout-header" style={{ marginBottom: '8px', fontSize: '0.85rem', color: '#fff', fontWeight: 700 }}>
-          {scoreSource.toUpperCase()} 评分：{job.score} 分
+          {(scoreSource || 'glm5').toUpperCase()} 评分：{job.score} 分
         </div>
         <div className="callout">
           <div className="callout-body">
