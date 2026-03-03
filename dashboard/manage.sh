@@ -15,9 +15,11 @@ fi
 
 BACKEND_DIR="$DASHBOARD_ROOT/backend"
 FRONTEND_DIR="$DASHBOARD_ROOT/frontend"
-CONDA_ENV="ai_core"
-BACKEND_PORT="${BACKEND_PORT:-8888}"
-FRONTEND_PORT="${FRONTEND_PORT:-5175}"
+# Required strictly from .env or environment
+CONDA_ENV="${CONDA_ENV:?Error: CONDA_ENV is not set in .env or environment}"
+BACKEND_PORT="${BACKEND_PORT:?Error: BACKEND_PORT is not set in .env or environment}"
+FRONTEND_PORT="${FRONTEND_PORT:?Error: FRONTEND_PORT is not set in .env or environment}"
+USE_CONDA="${USE_CONDA:?Error: USE_CONDA is not set in .env or environment}"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -65,26 +67,37 @@ function start_services() {
     # Ensure clean slate
     stop_services
 
-    # 1. Start Backend with CONDA
-    echo "Activating Conda environment: $CONDA_ENV..."
-    
-    # Determine conda path safely
-    CONDA_PATH=$(which conda)
-    if [ -z "$CONDA_PATH" ]; then
-        CONDA_PATH="$HOME/miniconda3/bin/conda"
+    # Try to activate only if USE_CONDA is true and CONDA_ENV is set
+    if [ "$USE_CONDA" = "true" ] && [ -n "$CONDA_ENV" ]; then
+        echo "Activating Conda environment: $CONDA_ENV..."
+        
+        # Determine conda path safely
+        if [ -z "$CONDA_EXE" ]; then
+            CONDA_PATH=$(which conda)
+        else
+            CONDA_PATH="$CONDA_EXE"
+        fi
+
+        if [ -z "$CONDA_PATH" ]; then
+            CONDA_PATH="$HOME/miniconda3/bin/conda"
+        fi
+        
+        CONDA_BASE=$($CONDA_PATH info --base 2>/dev/null)
+        if [ -z "$CONDA_BASE" ]; then
+            CONDA_BASE=$(dirname $(dirname "$CONDA_PATH"))
+        fi
+
+        if [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+            source "$CONDA_BASE/etc/profile.d/conda.sh"
+        fi
+        
+        conda activate "$CONDA_ENV" 2>/dev/null || {
+            echo -e "${RED}Warning: Failed to activate conda environment '$CONDA_ENV'.${NC}"
+            echo "Attempting to continue with system Python..."
+        }
+    else
+        echo "Skipping Conda activation (USE_CONDA=$USE_CONDA)..."
     fi
-    
-    CONDA_BASE=$(dirname $(dirname "$CONDA_PATH"))
-    if [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
-        source "$CONDA_BASE/etc/profile.d/conda.sh"
-    fi
-    
-    # Try to activate
-    conda activate "$CONDA_ENV" 2>/dev/null || {
-        echo -e "${RED}Error: Failed to activate conda environment '$CONDA_ENV'.${NC}"
-        echo "Please ensure conda is installed and '$CONDA_ENV' environment exists."
-        exit 1
-    }
 
     echo "Starting Backend API..."
     cd "$BACKEND_DIR"

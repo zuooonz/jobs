@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import json
 import os
 import psycopg2
@@ -14,35 +15,41 @@ try:
 except ImportError:
     pass
 
+def get_env_strict(key):
+    val = os.getenv(key)
+    if val is None:
+        raise EnvironmentError(f"Missing required environment variable: {key}")
+    return val
+
 # 数据库配置
 DB_CONFIG = {
-    "dbname": os.getenv("DB_NAME", "jobs"),
-    "user": os.getenv("DB_USER", "z"),
+    "dbname": get_env_strict("DB_NAME"),
+    "user": get_env_strict("DB_USER"),
     "password": os.getenv("DB_PASSWORD", ""),
-    "host": os.getenv("DB_HOST", "localhost"),
-    "port": os.getenv("DB_PORT", "5432")
+    "host": get_env_strict("DB_HOST"),
+    "port": get_env_strict("DB_PORT")
 }
 
 # 模型配置集
 MODEL_CONFIGS = {
     "gemma3": {
-        "api_base": os.getenv("GEMMA_API_BASE", "http://localhost:11434/v1"),
-        "api_key": os.getenv("GEMMA_API_KEY", "ollama"),
-        "model_name": os.getenv("GEMMA_MODEL_NAME", "gemma3:12b-it-qat"),
+        "api_base": get_env_strict("GEMMA_API_BASE"),
+        "api_key": get_env_strict("GEMMA_API_KEY"),
+        "model_name": get_env_strict("GEMMA_MODEL_NAME"),
         "score_col": "match_score",
         "rationale_col": "rationale"
     },
     "qwen3_8b": {
-        "api_base": os.getenv("QWEN_API_BASE", "http://localhost:8000/v1"),
-        "api_key": os.getenv("QWEN_API_KEY", "vllm"),
-        "model_name": os.getenv("QWEN_MODEL_NAME", "Qwen/Qwen3-8B-AWQ"),
+        "api_base": get_env_strict("QWEN_API_BASE"),
+        "api_key": get_env_strict("QWEN_API_KEY"),
+        "model_name": get_env_strict("QWEN_MODEL_NAME"),
         "score_col": "match_score_qwen3_8b",
         "rationale_col": "rationale_qwen3_8b"
     },
     "glm5": {
-        "api_base": os.getenv("GLM_API_BASE", "https://coding.dashscope.aliyuncs.com/v1"),
-        "api_key": os.getenv("GLM_API_KEY", ""),
-        "model_name": os.getenv("GLM_MODEL_NAME", "glm-5"),
+        "api_base": get_env_strict("GLM_API_BASE"),
+        "api_key": get_env_strict("GLM_API_KEY"),
+        "model_name": get_env_strict("GLM_MODEL_NAME"),
         "score_col": "match_score_glm5",
         "rationale_col": "rationale_glm5"
     }
@@ -53,8 +60,8 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config.json")
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     USER_CONFIG = json.load(f)
 
-HARD_BLACKLIST = USER_CONFIG["evaluator"]["hard_blacklist"]
-PROMPT_TEMPLATE = USER_CONFIG["evaluator"]["prompt_template"]
+HARD_BLACKLIST = USER_CONFIG.get("strategy", {}).get("evaluator", {}).get("hard_blacklist", [])
+PROMPT_TEMPLATE = USER_CONFIG.get("strategy", {}).get("evaluator", {}).get("prompt_template", "")
 
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG)
@@ -62,7 +69,7 @@ def get_db_connection():
 def check_model_availability(api_key, base_url):
     try:
         client = OpenAI(
-            api_key=api_key, # Not strictly validated for vLLM
+            api_key=api_key,
             base_url=base_url
         )
         return client.models.list()
@@ -142,19 +149,31 @@ def evaluate_job(client, model_name, profile_text, job_title, job_company, job_s
                 print(f"LLM 评估出错: {e}")
                 return None, None
 
-def apply_static_filters_globally(conn):
+def apply_static_filters_globally(conn, dry_run=False):
     """
     全量扫描并同步所有模型的静态过滤分数。
-    1. 判断是否命中下线或黑名单。
-    2. 如果命中，确保 match_score 和 match_score_qwen3_8b 均为 0。
-    3. 如果均不命中且曾被关键词过滤，则释放（设为 NULL）。
     """
     cur = conn.cursor()
-    cur.execute("SELECT id, title, job_description, match_score, rationale, match_score_qwen3_8b, rationale_qwen3_8b FROM liepin_jobs WHERE job_description IS NOT NULL")
+    
+    # 动态构建查询列，确保包含所有配置的列
+    cols_to_select = ["id", "title", "job_description"]
+    model_keys = list(MODEL_CONFIGS.keys())
+    for key in model_keys:
+        cols_to_select.append(MODEL_CONFIGS[key]["score_col"])
+        cols_to_select.append(MODEL_CONFIGS[key]["rationale_col"])
+    
+    query = f"SELECT {', '.join(cols_to_select)} FROM liepin_jobs WHERE job_description IS NOT NULL"
+    cur.execute(query)
     all_jobs = cur.fetchall()
     
     updates = []
-    for j_id, title, job_desc, s1, r1, s2, r2 in all_jobs:
+    for row in all_jobs:
+        j_id = row[0]
+        title = row[1]
+        job_desc = row[2]
+        # 模型数据从索引 3 开始，成对出现 (score, rationale)
+        model_data = row[3:]
+        
         desc_upper = job_desc.upper()
         title_upper = title.upper()
         
@@ -162,11 +181,9 @@ def apply_static_filters_globally(conn):
         target_rationale = None
         
         # --- 决策树 ---
-        # A. 状态下线
         if any(mark in desc_upper for mark in ["[UNAVAILABLE", "[JD_UNAVAILABLE"]):
             target_score = 0
             target_rationale = "后置过滤，暂停招聘"
-        # B. 命中黑名单关键词
         else:
             for toxic in HARD_BLACKLIST:
                 if toxic.upper() in title_upper or toxic.upper() in desc_upper:
@@ -174,55 +191,67 @@ def apply_static_filters_globally(conn):
                     target_rationale = f"后置过滤，根据具体过滤关键词：{toxic}"
                     break
         
-        # --- 同步逻辑 (针对双模型列) ---
+        # --- 同步逻辑 (针对全量模型列) ---
         needs_update = False
-        # 场景 A: 判定为应拦截 (0分)
         if target_score == 0:
-            # 只要任意一个模型的列没有同步为 0 或理由不符，就更新
-            if s1 != 0 or r1 != target_rationale or s2 != 0 or r2 != target_rationale:
-                needs_update = True
-        # 场景 B: 判定为应释放 (None)
+            # 只要任意一个模型的列没有同步为 0 或理由不符，就更新全部
+            for i in range(0, len(model_data), 2):
+                if model_data[i] != 0 or model_data[i+1] != target_rationale:
+                    needs_update = True
+                    break
         else:
             # 只要任意一个模型列之前是被“后置过滤”标记的，就全部重置
-            if (r1 and r1.startswith("后置过滤，")) or (r2 and r2.startswith("后置过滤，")):
-                needs_update = True
+            for i in range(1, len(model_data), 2):
+                if model_data[i] and model_data[i].startswith("后置过滤，"):
+                    needs_update = True
+                    break
 
         if needs_update:
-            updates.append((target_score, target_rationale, target_score, target_rationale, j_id))
+            # 构建更新参数列表: [score1, rationale1, score2, rationale2, ..., id]
+            update_row = []
+            for _ in model_keys:
+                update_row.extend([target_score, target_rationale])
+            update_row.append(j_id)
+            updates.append(tuple(update_row))
                 
     if updates:
-        import psycopg2.extras
-        psycopg2.extras.execute_batch(cur, """
-            UPDATE liepin_jobs 
-            SET match_score = %s, rationale = %s, 
-                match_score_qwen3_8b = %s, rationale_qwen3_8b = %s 
-            WHERE id = %s
-        """, updates)
-        conn.commit()
+        if dry_run:
+            print(f"[DRY RUN] Would update static filters for {len(updates)} jobs.")
+        else:
+            # 动态构建 UPDATE 语句
+            set_clauses = []
+            for key in model_keys:
+                set_clauses.append(f"{MODEL_CONFIGS[key]['score_col']} = %s")
+                set_clauses.append(f"{MODEL_CONFIGS[key]['rationale_col']} = %s")
+            
+            update_query = f"UPDATE liepin_jobs SET {', '.join(set_clauses)} WHERE id = %s"
+            
+            import psycopg2.extras
+            psycopg2.extras.execute_batch(cur, update_query, updates)
+            conn.commit()
     cur.close()
     return updates
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate jobs using local LLM")
-    parser.add_argument("--test-run", type=int, default=0, help="Evaluate N jobs for testing")
+    parser.add_argument("--dry-run", action="store_true", help="Run without writing to database")
+    parser.add_argument("--test-run", type=int, default=0, help="Evaluate N jobs for testing (implies --dry-run)")
     parser.add_argument("--model", type=str, default="glm5", choices=["gemma3", "qwen3_8b", "glm5"], help="Select evaluation model")
     args = parser.parse_args()
 
-    config = MODEL_CONFIGS[args.model]
-    test_mode = args.test_run > 0
-    batch_limit = args.test_run if test_mode else 500
+    # Aliasing --test-run logic to use dry-run internally
+    dry_run = args.dry_run or args.test_run > 0
+    batch_limit = args.test_run if args.test_run > 0 else 500
 
-    # 1. From .env (Higher priority, support multiple comma-separated paths)
-    env_profiles = os.getenv("RESUME_PROFILE_PATH", "")
-    env_paths = [p.strip() for p in env_profiles.split(",") if p.strip()]
+    config = MODEL_CONFIGS[args.model]
+
+    # 1. From config.json (Now in identity.profiles)
+    config_paths = USER_CONFIG.get("identity", {}).get("profiles", [])
     
-    # 2. From config.json
-    config_paths = USER_CONFIG.get("evaluator", {}).get("user_profile_paths", [])
-    
-    # Combine (deduplicate while preserving order, env first)
+    # Combine (deduplicate while preserving order)
     all_paths = []
     seen = set()
-    for p in env_paths + config_paths:
+    for p in config_paths:
         abs_p = os.path.expanduser(p)
         if abs_p not in seen:
             all_paths.append(abs_p)
@@ -245,7 +274,7 @@ def main():
 
     try:
         # 1. 同步全量静态过滤
-        static_updates = apply_static_filters_globally(conn)
+        static_updates = apply_static_filters_globally(conn, dry_run=dry_run)
         
         cur = conn.cursor()
         # 2. 查找所选模型尚未评估的岗位
@@ -264,6 +293,7 @@ def main():
             print(f"目前没有待 [{args.model}] 评估的新鲜职位。")
         else:
             print(f"\n使用模型: {args.model} ({config['model_name']})")
+            if dry_run: print("[DRY RUN MODE] Changes will not be saved to database.")
             print(f"找到本批次 {len(jobs)} 个待评估职位...")
             
             for job_id, title, company, salary, desc in jobs:
@@ -273,7 +303,7 @@ def main():
                 
                 if score is not None and reason is not None:
                     print(f" -> 分数: {score}")
-                    if not test_mode:
+                    if not dry_run:
                         try:
                             cur.execute(f"UPDATE liepin_jobs SET {score_col} = %s, {config['rationale_col']} = %s WHERE id = %s", (score, reason, job_id))
                             conn.commit()
@@ -281,14 +311,16 @@ def main():
                         except Exception as e:
                             conn.rollback()
                             print(f" -> 更新失败: {e}")
+                    else:
+                        success_count += 1
                 else:
                     print(" -> 失败，跳过。")
 
         cur.close()
 
         print("\n================= 运行报告 ==================")
-        print(f"✅ 后置静态同步: 更新了 {len(static_updates)} 个岗位。")
-        print(f"✅ [{args.model}] 评估: 写入了 {success_count} 个新岗位。")
+        print(f"✅ 后置静态同步: {'(模拟)' if dry_run else ''}更新了 {len(static_updates)} 个岗位。")
+        print(f"✅ [{args.model}] 评估: {'(模拟)' if dry_run else ''}处理了 {success_count} 个新岗位。")
         print("=============================================\n")
 
     finally:

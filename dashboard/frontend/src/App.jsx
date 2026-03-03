@@ -226,8 +226,12 @@ function App() {
 
       if (!(clusterMatch && tierMatch)) return false;
 
+      // Client-side filtering for Demo mode (since backend doesn't handle the slider in demo)
+      if (isDemo && (job.score || 0) < scoreThreshold) return false;
+
       if (statusFilter === 'rated') return job._isRated;
       if (statusFilter === 'unrated') return !job._isRated;
+      if (statusFilter === 'contacted') return job.user_notes && job.user_notes.startsWith('【已联系】');
       return true;
     });
 
@@ -348,13 +352,13 @@ function App() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>人工评分</span>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  {['all', 'unrated', 'rated'].map(f => (
+                  {['all', 'unrated', 'rated', 'contacted'].map(f => (
                     <button
                       key={f}
                       className={`filter-btn-mobile ${statusFilter === f ? 'active' : ''}`}
                       onClick={() => setStatusFilter(f)}
                     >
-                      {f === 'all' ? '全部' : f === 'unrated' ? '未处理' : '已评分'}
+                      {f === 'all' ? '全部' : f === 'unrated' ? '未处理' : f === 'rated' ? '已评分' : '已联系'}
                     </button>
                   ))}
                 </div>
@@ -440,14 +444,14 @@ function App() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <span className="filter-group-label" style={{ margin: 0, fontSize: '0.7rem' }}>人工评分</span>
                 <div className="filter-tabs" style={{ marginTop: 0, gap: '16px' }}>
-                  {['all', 'unrated', 'rated'].map(f => (
+                  {['all', 'unrated', 'rated', 'contacted'].map(f => (
                     <div
                       key={f}
                       className={`filter-tab ${statusFilter === f ? 'active' : ''}`}
                       onClick={() => setStatusFilter(f)}
                       style={{ fontSize: '0.8rem', padding: '4px 0' }}
                     >
-                      {f === 'all' ? '全部' : f === 'unrated' ? '未处理' : '已评分'}
+                      {f === 'all' ? '全部' : f === 'unrated' ? '未处理' : f === 'rated' ? '已评分' : '已联系'}
                     </div>
                   ))}
                 </div>
@@ -477,11 +481,12 @@ function App() {
                   暂无匹配结果。
                 </div>
               ) : (
-                filteredJobs.map(job => (
+                filteredJobs.slice(0, window.innerWidth <= 768 ? 80 : filteredJobs.length).map(job => (
                   <JobItem
                     key={job.id}
                     job={job}
                     expandAll={expandAll}
+                    scoreSource={scoreSource}
                     onUpdate={handleLocalUpdate}
                   />
                 ))
@@ -558,7 +563,8 @@ function HeartRating({ value, onChange, onLongPress }) {
   );
 }
 
-function JobItem({ job, onUpdate, expandAll }) {
+// Memoize JobItem to prevent massive redundant re-renders on every global state update
+const JobItem = React.memo(({ job, onUpdate, expandAll, scoreSource }) => {
   const [userScore, setUserScore] = useState(job.user_score ? job.user_score / 20 : null);
   const [notes, setNotes] = useState(job.user_notes || '');
   const [showJD, setShowJD] = useState(expandAll);
@@ -578,10 +584,15 @@ function JobItem({ job, onUpdate, expandAll }) {
   }, [job.user_score, job.user_notes]);
 
   const saveFeedback = useCallback(async (newScore, newNotes) => {
+    // Feedback protection ref to prevent "Feedback Storms" on slow connections/mobile jitter
+    if (saveFeedback._pendingIds === undefined) saveFeedback._pendingIds = new Set();
+    if (saveFeedback._pendingIds.has(job.id)) return;
+
     // Convert 1-5 to 20-100 logic, but map null to null
     const numericScore = newScore === null ? null : Math.round(newScore * 20);
 
     try {
+      saveFeedback._pendingIds.add(job.id);
       // Optimistically update parent state
       onUpdate(job.id, numericScore, newNotes);
 
@@ -595,6 +606,8 @@ function JobItem({ job, onUpdate, expandAll }) {
       });
     } catch (error) {
       console.error('Error saving feedback:', error);
+    } finally {
+      saveFeedback._pendingIds.delete(job.id);
     }
   }, [job.id, onUpdate]);
 
@@ -765,7 +778,7 @@ function JobItem({ job, onUpdate, expandAll }) {
         )}
 
         <div className="callout-header" style={{ marginBottom: '8px', fontSize: '0.85rem', color: '#fff', fontWeight: 700 }}>
-          GLM-5 评分：{job.score} 分
+          {scoreSource.toUpperCase()} 评分：{job.score} 分
         </div>
         <div className="callout">
           <div className="callout-body">
@@ -823,6 +836,6 @@ function JobItem({ job, onUpdate, expandAll }) {
       </div>
     </div>
   );
-}
+});
 
 export default App;

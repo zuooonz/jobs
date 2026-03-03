@@ -11,21 +11,26 @@ const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
 
-const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome-stable';
+// Load environment variables (from parent dir)
+require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+
+const getEnvStrict = (key) => {
+    const val = process.env[key];
+    if (val === undefined) {
+        throw new Error(`Missing required environment variable: ${key}`);
+    }
+    return val;
+};
+
+const CHROME_PATH = getEnvStrict('CHROME_PATH');
 const USER_DATA_DIR = process.env.CHROME_PROFILE_DIR || path.join(__dirname, '..', '..', 'chrome_profile');
-// Load environment variables if available
-try {
-    require('dotenv').config();
-} catch (e) {
-    // dotenv not installed, using system env
-}
 
 // DB Config
 const DB_CONFIG = {
-    host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT || '5432', 10),
-    database: process.env.DB_NAME || 'jobs',
-    user: process.env.DB_USER || 'z',
+    host: getEnvStrict('DB_HOST'),
+    port: parseInt(getEnvStrict('DB_PORT'), 10),
+    database: getEnvStrict('DB_NAME'),
+    user: getEnvStrict('DB_USER'),
     password: process.env.DB_PASSWORD || ''
 };
 
@@ -161,15 +166,30 @@ async function fetchJobDescription(page, url) {
     }
 }
 
+// Argument parsing with typo protection
+const validArgs = ['--dry-run', '-d'];
+const unknownArgs = process.argv.slice(2).filter(arg => arg.startsWith('-') && !validArgs.includes(arg) && isNaN(parseInt(arg)));
+
+if (unknownArgs.length > 0) {
+    console.error(`\n[ERROR] Unknown or mistyped arguments: ${unknownArgs.join(', ')}`);
+    console.error(`Available flags: --dry-run (or -d) for safe testing.`);
+    process.exit(1);
+}
+
+const dryRun = process.argv.includes('--dry-run') || process.argv.includes('-d');
+const minScoreArg = process.argv.find(arg => !arg.startsWith('-') && !isNaN(parseInt(arg)));
+const minScore = minScoreArg ? parseInt(minScoreArg, 10) : null;
+
 async function main() {
-    const minScoreArg = process.argv[2];
-    const minScore = minScoreArg && !isNaN(parseInt(minScoreArg)) ? parseInt(minScoreArg, 10) : null;
     console.log(`\n======================================================`);
-    console.log(`[配置] 启动定制化捞取模式`);
+    console.log(`[配置] 启动定制化捞取模式${dryRun ? ' [DRY RUN]' : ''}`);
     if (minScore !== null) {
         console.log(` => 设置最低分数线: >= ${minScore} (低于此分数的岗位如果缺失 update_time 等将不被获取)`);
     } else {
         console.log(` => 未设置最低分数线，将无差别捞取所有信息缺失的岗位`);
+    }
+    if (dryRun) {
+        console.log(`[DRY RUN MODE] Changes will not be saved to database.`);
     }
     console.log(`======================================================\n`);
 
@@ -224,16 +244,16 @@ async function main() {
 
     while (true) {
         // 获取所有存在空缺字段且本轮尚未抓取过的岗位。
-        // 最高优先级：无论是否满足分数（或者根本没评分），只要 job_description 为空，就必须最先处理。
         const res = await dbClient.query(`
-    SELECT id, title, company, location, link, job_description, match_score, match_score_qwen3_8b, update_time
+    SELECT id, title, company, location, link, job_description, 
+           match_score, match_score_qwen3_8b, match_score_glm5, update_time
     FROM liepin_jobs 
     WHERE (
             job_description IS NULL
           ) OR (
             job_description NOT LIKE '[UNAVAILABLE%' AND 
             job_description NOT LIKE '[FILTERED%' AND
-            (GREATEST(COALESCE(match_score, 0), COALESCE(match_score_qwen3_8b, 0)) >= $2 OR $2 IS NULL) AND 
+            (GREATEST(COALESCE(match_score, 0), COALESCE(match_score_qwen3_8b, 0), COALESCE(match_score_glm5, 0)) >= $2 OR $2 IS NULL) AND 
             (
                 update_time IS NULL OR 
                 company IS NULL OR company = '' OR
@@ -243,7 +263,7 @@ async function main() {
       AND NOT (id = ANY($3::int[]))
     ORDER BY 
       CASE WHEN job_description IS NULL THEN 0 ELSE 1 END,
-      GREATEST(COALESCE(match_score, 0), COALESCE(match_score_qwen3_8b, 0)) DESC NULLS LAST, 
+      GREATEST(COALESCE(match_score, 0), COALESCE(match_score_qwen3_8b, 0), COALESCE(match_score_glm5, 0)) DESC NULLS LAST, 
       fetched_at DESC 
     LIMIT $1;
   `, [BATCH_SIZE, minScore, Array.from(processedIds)]);
@@ -256,7 +276,7 @@ async function main() {
         }
 
         console.log(`\n================================`);
-        console.log(`准备抓取本批次 ${jobsToProcess.length} 个岗位详情...`);
+        console.log(`准备抓取本批次 ${jobsToProcess.length} 个岗位详情...${dryRun ? ' [DRY RUN]' : ''}`);
         console.log(`================================\n`);
 
         let successCount = 0;
@@ -268,10 +288,9 @@ async function main() {
             // 打开链接抓取文本
             let data = await fetchJobDescription(page, job.link);
 
-            // 如果没抓到并且不是因为明确下线或被拦截，才认为是结构变更加强重试
             if ((!data || !data.desc || data.desc.length <= 10) && !(data && (data.isOffline || data.isBlock))) {
                 console.log(` => 未能在初次提取到有效的职责描述。可能是遇到了结构变更...`);
-                data = await fetchJobDescription(page, job.link); // 有时候刷新/重试一下能好
+                data = await fetchJobDescription(page, job.link);
             }
 
             const updates = [];
@@ -283,10 +302,13 @@ async function main() {
             if (data && (data.isBlock || data.isOffline || (data.desc && data.desc.length > 10))) {
                 if (data.isBlock) {
                     const stopTime = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-                    console.error(`\n[CRITICAL ERROR] [${stopTime}] 🚨 检测到猎聘防爬风控拦截！爬虫立刻安全停机（已遵循指令：不写入错误状态标签，保护原始数据）。`);
-                    console.log(`\n⏳ 为您停留 60 秒... 请在打开的浏览器窗口中手动完成登录或滑块验证。`);
-                    await new Promise(resolve => setTimeout(resolve, 60000));
-                    console.log(`\n⏳ 时间到。请重新运行爬虫。`);
+                    console.error(`\n[CRITICAL ERROR] [${stopTime}] 🚨 检测到猎聘防爬风控拦截！爬虫立刻安全停机。`);
+                    if (dryRun) {
+                        console.log(`[DRY RUN] Would wait for 60s and exit.`);
+                    } else {
+                        console.log(`\n⏳ 为您停留 60 秒... 请在打开的浏览器窗口中手动完成登录或滑块验证。`);
+                        await new Promise(resolve => setTimeout(resolve, 60000));
+                    }
                     process.exit(1);
                 } else if (data.isOffline) {
                     console.log(` => 页面明确提示已下线/已停招。标记状态。`);
@@ -298,61 +320,50 @@ async function main() {
                     currentDesc = data.desc;
                 }
 
-                // 如果库里公司名字是空的而页面抓到了，我们就补上
                 if ((!currentCompany || currentCompany.trim() === '') && data.company) {
                     currentCompany = data.company;
                     updates.push(`补充公司名`);
-                    console.log(` => 补充了缺失的公司名称: ${currentCompany}`);
                 }
 
-                // 如果库里地点是空的而页面抓到了，我们补上
                 if ((!currentLocation || currentLocation.trim() === '' || currentLocation === '不限') && data.location) {
                     currentLocation = data.location;
                     updates.push(`补充地点`);
-                    console.log(` => 补充了缺失的地点信息: ${currentLocation}`);
                 }
 
                 if (data.updateTime && data.updateTime !== currentUpdate) {
                     currentUpdate = data.updateTime;
                     updates.push(`更新时间: ${currentUpdate}`);
-                    console.log(` => 获取到该岗位的最新更新时间: ${currentUpdate}`);
                 }
 
-                await dbClient.query(`
-        UPDATE liepin_jobs 
-        SET job_description = $1, company = $2, location = $3, update_time = $4
-        WHERE id = $5;
-      `, [currentDesc, currentCompany, currentLocation, currentUpdate || null, job.id]);
+                if (!dryRun) {
+                    await dbClient.query(`
+                        UPDATE liepin_jobs 
+                        SET job_description = $1, company = $2, location = $3, update_time = $4
+                        WHERE id = $5;
+                    `, [currentDesc, currentCompany, currentLocation, currentUpdate || null, job.id]);
+                } else {
+                    console.log(`[DRY RUN] Updated data: ${currentCompany} | ${currentLocation} | ${currentUpdate}`);
+                }
                 successCount++;
 
                 if (updates.length > 0) {
                     updateReport.push({
                         id: job.id,
-                        score_gemma: job.match_score,
-                        score_qwen: job.match_score_qwen3_8b,
+                        'score_gemma': job.match_score,
+                        'score_qwen': job.match_score_qwen3_8b,
+                        'score_glm5': job.match_score_glm5,
                         company: currentCompany,
                         title: job.title,
-                        msg: updates.join(' | ')
+                        msg: updates.join(' | ') + (dryRun ? ' (MOCK)' : '')
                     });
                 }
             } else {
-                console.log(` => 抓取不到详情(非下线，原因未知)。保留原状，将在后续运行中自动重试。`);
-                updates.push('爬取失败(保留原状)');
-                updateReport.push({
-                    id: job.id,
-                    score_gemma: job.match_score,
-                    score_qwen: job.match_score_qwen3_8b,
-                    company: currentCompany,
-                    title: job.title,
-                    msg: updates.join(' | ')
-                });
+                console.log(` => 抓取不到详情(非下线，原因未知)。保留原状。`);
             }
 
             processedIds.add(job.id);
 
-            // 随机休息，防止被封锁详情页接口
             if (i < jobsToProcess.length - 1) {
-                // 延长随机等待间隔 (8秒 到 15秒)
                 const waitMs = randomRange(8000, 15000);
                 await sleep(waitMs);
             }
@@ -360,15 +371,16 @@ async function main() {
 
         console.log(`\n本批次处理完毕。休息 10 秒后处理下一批...`);
         await sleep(10000);
+        if (dryRun && successCount > 0) break; // Limit dry run to one batch
     }
 
     console.log(`\n========================================`);
-    console.log(`🎊 全部抓取/更新完成！退出运行模式。`);
+    console.log(`🎊 全部抓取/处理完成！${dryRun ? ' [DRY RUN]' : ''}`);
     console.log(`========================================\n`);
 
     if (updateReport.length > 0) {
         console.log(`▶ 本次运行综合报告：`);
-        console.table(updateReport, ['id', 'score_gemma', 'score_qwen', 'company', 'title', 'msg']);
+        console.table(updateReport, ['id', 'score_gemma', 'score_qwen', 'score_glm5', 'company', 'title', 'msg']);
         console.log(`共更新了 ${updateReport.length} 个岗位信息。`);
     } else {
         console.log(`▶ 本次运行综合报告：\n未发现任何信息缺失或状态变更的岗位。`);
@@ -376,8 +388,6 @@ async function main() {
     console.log(`\n`);
 
     await page.close();
-    // 我们只关闭 page，不一定关 browser (如果配置了复用)
-    // await browser.close(); 
     await dbClient.end();
 }
 

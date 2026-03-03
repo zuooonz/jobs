@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import psycopg2
 import os
 import argparse
@@ -13,18 +14,19 @@ try:
 except ImportError:
     pass
 
-# Load user config
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config.json")
-with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-    USER_CONFIG = json.load(f)
+def get_env_strict(key):
+    val = os.getenv(key)
+    if val is None:
+        raise EnvironmentError(f"Missing required environment variable: {key}")
+    return val
 
-# DB CONFIG from environment
+# DB CONFIG from environment (Strict)
 DB_CONFIG = {
-    'dbname': os.getenv('DB_NAME', 'jobs'),
-    'user': os.getenv('DB_USER', 'z'),
+    'dbname': get_env_strict('DB_NAME'),
+    'user': get_env_strict('DB_USER'),
     'password': os.getenv('DB_PASSWORD', ''),
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'port': os.getenv('DB_PORT', '5432')
+    'host': get_env_strict('DB_HOST'),
+    'port': get_env_strict('DB_PORT')
 }
 
 def categorize_activity(update_time):
@@ -124,19 +126,26 @@ def render_job_block(f, job, include_jd=False):
     
     f.write("\n---\n\n")
 
-def export_top_jobs(threshold=80, include_jd=False):
+def export_top_jobs(threshold=80, include_jd=False, model="glm5", dry_run=False):
     try:
+        model_map = {
+            "gemma3": ("match_score", "rationale"),
+            "qwen3_8b": ("match_score_qwen3_8b", "rationale_qwen3_8b"),
+            "glm5": ("match_score_glm5", "rationale_glm5")
+        }
+        score_col, rationale_col = model_map.get(model, model_map["glm5"])
+        
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
         
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, title, company, salary, location, 
-                   match_score_qwen3_8b, rationale_qwen3_8b,
+                   {score_col}, {rationale_col},
                    link, update_time, job_description
             FROM liepin_jobs
-            WHERE match_score_qwen3_8b >= %s
+            WHERE {score_col} >= %s
               AND job_description NOT LIKE '[UNAVAILABLE%%'
-            ORDER BY match_score_qwen3_8b DESC, fetched_at DESC
+            ORDER BY {score_col} DESC, fetched_at DESC
         """, (threshold,))
         
         jobs = cur.fetchall()
@@ -157,20 +166,19 @@ def export_top_jobs(threshold=80, include_jd=False):
             cat = smart_categorize(job[1], job[9]) 
             clusters_data[cat].append(job)
             
-        # Path and Settings
-        output_dir = os.path.expanduser(os.getenv("JOBS_NOTES_DIR", "~/Documents/notes/jobs"))
+        # Path and Settings from config.json (storage.notes_dir)
+        output_dir = os.path.expanduser(USER_CONFIG.get("storage", {}).get("notes_dir", "~/Documents/notes/jobs"))
         os.makedirs(output_dir, exist_ok=True)
+
+        # Determine filename based on current time
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filepath = os.path.join(output_dir, f"求职指南_{current_time}.md")
         
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        filepath = os.path.join(output_dir, f"top_jobs_{date_str}.md")
-        
-        ACTIVITY_TITLES = {
-            "1_HIGHLY_ACTIVE": "高活跃度：招聘方近期有频繁互动",
-            "2_RECENTLY_ACTIVE": "一般活跃：近一个月内有操作记录",
-            "3_UNKNOWN": "活跃度未知：未捕获到明确时间节点",
-            "4_LONG_INACTIVE": "较低活跃：超过一个月未更新"
-        }
-        
+        if dry_run:
+            print(f"[DRY RUN] Would generate report for {len(jobs)} jobs.")
+            print(f"[DRY RUN] Target file: {filepath}")
+            return
+
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write("# 职位深度分析与决策指南\n\n")
             f.write("本报告采用单一模型评分体系，基于 `config.json` 的动态规则生成。\n\n---\n\n")
@@ -192,6 +200,14 @@ def export_top_jobs(threshold=80, include_jd=False):
                     act = categorize_activity(jb[8]) 
                     activity_groups[act].append(jb)
                 
+                # Define ACTIVITY_TITLES here or ensure it's globally available
+                ACTIVITY_TITLES = {
+                    "1_HIGHLY_ACTIVE": "🚀 高度活跃",
+                    "2_RECENTLY_ACTIVE": "✨ 近期活跃",
+                    "3_UNKNOWN": "❓ 更新未知",
+                    "4_LONG_INACTIVE": "💤 长期不活跃"
+                }
+
                 for act_key in ["1_HIGHLY_ACTIVE", "2_RECENTLY_ACTIVE", "3_UNKNOWN", "4_LONG_INACTIVE"]:
                     act_jobs = activity_groups.get(act_key, [])
                     if not act_jobs: continue
@@ -213,10 +229,17 @@ def export_top_jobs(threshold=80, include_jd=False):
         if 'conn' in locals(): conn.close()
 
 if __name__ == "__main__":
+    # Load user config for defaults
+    CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config.json")
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        USER_CONFIG = json.load(f)
+
     default_threshold = USER_CONFIG.get("tools", {}).get("obsidian", {}).get("threshold", 80)
     parser = argparse.ArgumentParser(description="Export deeply analyzed job reports.")
     parser.add_argument("--threshold", type=int, default=default_threshold, help=f"最低分数阈值, 默认 {default_threshold}")
     parser.add_argument("--include-jd", "-j", action="store_true", help="是否包含岗位描述")
+    parser.add_argument("--model", type=str, default="glm5", help="评分模型 (gemma3, qwen3_8b, glm5)")
+    parser.add_argument("--dry-run", action="store_true", help="Run without writing files")
     args = parser.parse_args()
     
-    export_top_jobs(args.threshold, args.include_jd)
+    export_top_jobs(args.threshold, args.include_jd, model=args.model, dry_run=args.dry_run)

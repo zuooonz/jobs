@@ -13,23 +13,27 @@ const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
 
-const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome-stable';
+// Load environment variables (from parent dir)
+require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+
+const getEnvStrict = (key) => {
+  const val = process.env[key];
+  if (val === undefined) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return val;
+};
+
+const CHROME_PATH = getEnvStrict('CHROME_PATH');
 const STATE_FILE = path.join(__dirname, '..', '..', '.jobs_state.json');
 const CONFIG_FILE = path.join(__dirname, '..', '..', 'config.json');
 
-// Load environment variables if available
-try {
-  require('dotenv').config();
-} catch (e) {
-  // dotenv not installed, using system env
-}
-
 // DB Config
 const DB_CONFIG = {
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432', 10),
-  database: process.env.DB_NAME || 'jobs',
-  user: process.env.DB_USER || 'z',
+  host: getEnvStrict('DB_HOST'),
+  port: parseInt(getEnvStrict('DB_PORT'), 10),
+  database: getEnvStrict('DB_NAME'),
+  user: getEnvStrict('DB_USER'),
   password: process.env.DB_PASSWORD || ''
 };
 
@@ -199,15 +203,21 @@ async function runOneKeywordAndSaveToDB(page, dbClient, keyword) {
   return { keyword, totalSaved };
 }
 
+const dryRun = process.argv.includes('--dry-run') || process.argv.includes('-d');
+
 async function main() {
   // 1. 尝试初始化数据库连接
   const dbClient = new Client(DB_CONFIG);
-  try {
-    await dbClient.connect();
-    console.log(`[DB] 成功连接到 PostgreSQL (${DB_CONFIG.database})`);
-  } catch (err) {
-    console.error(`[DB] 数据库连接失败: ${err.message}`);
-    process.exit(1);
+  if (dryRun) {
+    console.log(`[DRY RUN MODE] Changes will not be saved to database.`);
+  } else {
+    try {
+      await dbClient.connect();
+      console.log(`[DB] 成功连接到 PostgreSQL (${DB_CONFIG.database})`);
+    } catch (err) {
+      console.error(`[DB] 数据库连接失败: ${err.message}`);
+      process.exit(1);
+    }
   }
 
   // 读取配置
@@ -252,7 +262,7 @@ async function main() {
   }
 
   console.log(`\n==================================================`);
-  console.log(`猎聘检索 Session (直写DB，不写文件，翻页到底)`);
+  console.log(`猎聘检索 Session (直写DB，不写文件，翻页到底)${dryRun ? ' [DRY RUN]' : ''}`);
   console.log(`关键词: ${picked.join(' / ')}`);
   console.log(`时间: ${new Date().toLocaleString()}`);
   console.log(`==================================================`);
@@ -265,7 +275,7 @@ async function main() {
   const summaries = [];
   for (let i = 0; i < picked.length; i++) {
     const kw = picked[i];
-    const result = await runOneKeywordAndSaveToDB(page, dbClient, kw, cityCode);
+    const result = await runOneKeywordAndSaveToDB(page, dbClient, kw, cityCode, dryRun);
     summaries.push(result);
 
     if (i < picked.length - 1) {
@@ -275,24 +285,153 @@ async function main() {
     }
   }
 
-  // 保存最新状态
-  state.nextKeywordIndex = (startIdx + batchSize) % keywords.length;
-  state.lastRunAt = new Date().toISOString();
-  state.lastKeywords = picked;
-  state.lastSessionSummary = summaries;
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  if (!dryRun) {
+    // 保存最新状态
+    state.nextKeywordIndex = (startIdx + batchSize) % keywords.length;
+    state.lastRunAt = new Date().toISOString();
+    state.lastKeywords = picked;
+    state.lastSessionSummary = summaries;
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 
-  console.log(`\n================ Session汇总 ================`);
-  summaries.forEach(s => {
-    console.log(`- ${s.keyword}: 成功入库/更新 ${s.totalSaved} 个北京职位`);
-  });
-  console.log(`下次起始关键词: ${keywords[state.nextKeywordIndex % keywords.length]}`);
+    console.log(`\n================ Session汇总 ================`);
+    summaries.forEach(s => {
+      console.log(`- ${s.keyword}: 成功入库/更新 ${s.totalSaved} 个北京职位`);
+    });
+    console.log(`下次起始关键词: ${keywords[state.nextKeywordIndex % keywords.length]}`);
 
-  // 清理
-  await dbClient.end();
+    // 清理
+    await dbClient.end();
+  } else {
+    console.log(`\n================ [DRY RUN] Session汇总 ================`);
+    summaries.forEach(s => {
+      console.log(`- ${s.keyword}: 模拟处理了 ${s.totalSaved} 个北京职位`);
+    });
+  }
+
   // 不关闭浏览器，保持复用特性
-  console.log(`[完成] 回收 DB 连接，脚本退出。`);
+  console.log(`[完成] 脚本退出。`);
   process.exit(0);
+}
+
+// Update runOneKeywordAndSaveToDB to handle dryRun
+async function runOneKeywordAndSaveToDB(page, dbClient, keyword, cityCode, dryRun = false) {
+  let pageNum = 0;
+  let totalSaved = 0;
+  let maxPageFound = 999;
+
+  while (pageNum <= maxPageFound) {
+    const { rawJobs, maxPage } = await fetchJobsOnePage(page, keyword, pageNum, cityCode);
+
+    if (pageNum === 0 && maxPage !== undefined) {
+      maxPageFound = maxPage;
+    }
+
+    if (rawJobs.length === 0) {
+      console.log(`[${keyword}] 第${pageNum}页无数据，提前结束。`);
+      break;
+    }
+
+    // 清洗和过滤: 仅北京，去参数
+    const validJobs = rawJobs
+      .filter(j => j.location.includes('北京') || j.location.includes('朝阳') || j.location.includes('海淀'))
+      .map(j => ({
+        ...j,
+        link: j.link.split('?')[0]
+      }));
+
+    if (validJobs.length === 0) {
+      console.log(`[${keyword}] 第${pageNum}页没有符合要求(北京)的职位 (共解析到 ${rawJobs.length} 个职位)。`);
+    } else {
+      let pageSaved = 0;
+      const fetchedAt = new Date();
+
+      for (const job of validJobs) {
+        if (!dryRun) {
+          try {
+            const query = `
+              INSERT INTO liepin_jobs (keyword, fetched_at, title, location, salary, company, link)
+              VALUES ($1, $2, $3, $4, $5, $6, $7)
+              ON CONFLICT (link) DO UPDATE SET 
+                fetched_at = EXCLUDED.fetched_at,
+                keyword = EXCLUDED.keyword,
+                title = EXCLUDED.title,
+                salary = EXCLUDED.salary,
+                company = EXCLUDED.company,
+                location = EXCLUDED.location;
+            `;
+            const values = [keyword, fetchedAt, job.title, job.location, job.salary, job.company, job.link];
+            await dbClient.query(query, values);
+            pageSaved++;
+          } catch (dbErr) {
+            console.error(`[DB Error] 插入/更新失败 ${job.title}:`, dbErr.message);
+          }
+        } else {
+          console.log(`[DRY RUN] Detected job: ${job.company} - ${job.title} | ${job.salary} | ${job.link}`);
+          pageSaved++;
+        }
+      }
+      totalSaved += pageSaved;
+      console.log(`[${keyword}] 第${pageNum}页${dryRun ? '模拟' : '成功入库/更新'}了 ${pageSaved} 个北京职位 (过滤掉了 ${rawJobs.length - pageSaved} 个非北京)`);
+    }
+
+    pageNum++;
+    await sleep(5000 + Math.random() * 3000); // 翻页休眠 5-8s 防封禁
+  }
+
+  return { keyword, totalSaved };
+}
+
+async function fetchJobsOnePage(page, keyword, pageNum, cityCode) {
+  const encodedKeyword = encodeURIComponent(keyword);
+  const url = `https://www.liepin.com/zhaopin/?key=${encodedKeyword}&city=${cityCode}&dq=${cityCode}&currentPage=${pageNum}`;
+
+  try {
+    console.log(`\n[${keyword}] 打开第${pageNum}页...`);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    await sleep(8000);
+    // 模拟轻微滚动触发加载
+    await page.evaluate(() => { window.scrollTo(0, 400); });
+    await sleep(1000);
+    await page.evaluate(() => { window.scrollTo(0, 800); });
+    await sleep(1000);
+    await page.evaluate(() => { window.scrollTo(0, 1200); });
+    await sleep(1000);
+
+    const result = await page.evaluate(() => {
+      // 获取最大页码
+      let maxPage = 0;
+      const paginationElements = document.querySelectorAll('.ant-pagination-item');
+      if (paginationElements && paginationElements.length > 0) {
+        const pageNumbers = Array.from(paginationElements).map(el => parseInt(el.textContent, 10)).filter(n => !isNaN(n));
+        if (pageNumbers.length > 0) {
+          maxPage = Math.max(...pageNumbers) - 1;
+        }
+      }
+
+      const items = Array.from(document.querySelectorAll('[class*="job-card-pc-container"]'));
+      const rawJobs = items.map(item => {
+        const lines = item.innerText.split('\n').map(l => l.trim()).filter(l => l.length > 0 && l !== '【' && l !== '】');
+        const linkEl = item.querySelector('a[href*="/job/"], a[href*="/a/"]');
+
+        return {
+          title: lines[0] || '',
+          location: lines[1] || '',
+          salary: lines[2] || '',
+          company: lines[5] || lines[lines.length - 4] || '未披露',
+          link: linkEl ? linkEl.href : ''
+        };
+      }).filter(j => j.title && j.link);
+
+      return { rawJobs, maxPage };
+    });
+
+    console.log(`[${keyword}] 第${pageNum}页抓取到 ${result.rawJobs.length} 个职位元素 (总共可见到页索引: ${result.maxPage})`);
+    return result;
+  } catch (error) {
+    console.error(`[${keyword}] 第${pageNum}页提取失败:`, error.message);
+    return { rawJobs: [], maxPage: 0 };
+  }
 }
 
 main().catch(err => {

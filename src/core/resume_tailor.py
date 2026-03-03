@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import psycopg2
 import re
@@ -13,6 +14,12 @@ try:
 except ImportError:
     pass
 
+def get_env_strict(key):
+    val = os.getenv(key)
+    if val is None:
+        raise EnvironmentError(f"Missing required environment variable: {key}")
+    return val
+
 # Load user config
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config.json")
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -20,21 +27,22 @@ with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 
 # DB CONFIG
 DB_CONFIG = {
-    'dbname': os.getenv('DB_NAME', 'jobs'),
-    'user': os.getenv('DB_USER', 'z'),
+    'dbname': get_env_strict('DB_NAME'),
+    'user': get_env_strict('DB_USER'),
     'password': os.getenv('DB_PASSWORD', ''),
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'port': os.getenv('DB_PORT', '5432')
+    'host': get_env_strict('DB_HOST'),
+    'port': get_env_strict('DB_PORT')
 }
 
 # Connection Config from .env (Higher priority for infrastructure)
-API_BASE = os.getenv("GEMMA_API_BASE", "http://localhost:11434/v1")
-API_KEY = os.getenv("GEMMA_API_KEY", "ollama")
-MODEL_NAME = os.getenv("GEMMA_MODEL_NAME", "gemma3:12b-it-qat")
+API_BASE = get_env_strict("GEMMA_API_BASE")
+API_KEY = get_env_strict("GEMMA_API_KEY")
+MODEL_NAME = get_env_strict("GEMMA_MODEL_NAME")
 
-# Logic Config from config.json
-TAILOR_CONFIG = USER_CONFIG.get("tools", {}).get("resume_tailor", {})
-PROMPT_TEMPLATE = TAILOR_CONFIG.get("prompt_template", "")
+# Logic Config from config.json (strategy.evaluator)
+TAILOR_LOGIC = USER_CONFIG.get("strategy", {}).get("evaluator", {})
+TAILOR_TOOLS = USER_CONFIG.get("tools", {}).get("resume_tailor", {})
+PROMPT_TEMPLATE = TAILOR_TOOLS.get("prompt_template", "")
 
 def categorize_activity(update_time):
     if not update_time: return '3_UNKNOWN'
@@ -50,17 +58,13 @@ def categorize_activity(update_time):
     return '3_UNKNOWN'
 
 def load_profile():
-    # 1. From .env (Higher priority, support multiple comma-separated paths)
-    env_profiles = os.getenv("RESUME_PROFILE_PATH", "")
-    env_paths = [p.strip() for p in env_profiles.split(",") if p.strip()]
+    # 1. From config.json (identity.profiles)
+    config_paths = USER_CONFIG.get("identity", {}).get("profiles", [])
     
-    # 2. From config.json
-    config_paths = USER_CONFIG.get("evaluator", {}).get("user_profile_paths", [])
-    
-    # Combine (deduplicate while preserving order, env first)
+    # Combine (deduplicate while preserving order)
     all_paths = []
     seen = set()
-    for p in env_paths + config_paths:
+    for p in config_paths:
         abs_p = os.path.expanduser(p)
         if abs_p not in seen:
             all_paths.append(abs_p)
@@ -100,20 +104,27 @@ def generate_tailored_resume(client, profile_text, job_title, job_company, job_d
     except Exception as e:
         return f"AI 生成简历失败: {e}"
 
-def create_job_doc():
+def create_job_doc(model="glm5", threshold=80, dry_run=False):
     try:
+        model_map = {
+            "gemma3": ("match_score", "rationale"),
+            "qwen3_8b": ("match_score_qwen3_8b", "rationale_qwen3_8b"),
+            "glm5": ("match_score_glm5", "rationale_glm5")
+        }
+        score_col, rationale_col = model_map.get(model, model_map["glm5"])
+        
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
         
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, title, company, salary, location, 
-                   match_score_qwen3_8b, rationale_qwen3_8b, 
+                   {score_col}, {rationale_col}, 
                    link, update_time, job_description
             FROM liepin_jobs
-            WHERE match_score_qwen3_8b >= 80
+            WHERE {score_col} >= %s
               AND job_description NOT LIKE '[UNAVAILABLE%%'
-            ORDER BY match_score_qwen3_8b DESC, fetched_at DESC
-        """)
+            ORDER BY {score_col} DESC, fetched_at DESC
+        """, (threshold,))
         jobs = cur.fetchall()
         
         activity_groups = defaultdict(list)
@@ -132,9 +143,14 @@ def create_job_doc():
         client = OpenAI(api_key=API_KEY, base_url=API_BASE)
         profile_text = load_profile()
         
-        # Path from .env (infra)
-        output_dir = os.path.expanduser(os.getenv("JOBS_NOTES_DIR", "~/Documents/notes/jobs"))
-        os.makedirs(output_dir, exist_ok=True)
+        # Path from config.json (storage.notes_dir)
+        output_dir = os.path.expanduser(USER_CONFIG.get("storage", {}).get("notes_dir", "~/Documents/notes/jobs"))
+        
+        if dry_run:
+            print(f"[DRY RUN] Would generate tailored resumes for {len(top_5)} highly active jobs.")
+            print(f"[DRY RUN] Output directory: {output_dir}")
+        else:
+            os.makedirs(output_dir, exist_ok=True)
         
         print(f"找到 {len(top_5)} 个极度活跃岗位，开始生成定制简历...")
         
@@ -145,6 +161,10 @@ def create_job_doc():
             folder_name = f"Resume_{idx:02d}_{clean_title[:15]}_{company_str[:10]}"
             folder_path = os.path.join(output_dir, folder_name)
             
+            if dry_run:
+                print(f"[DRY RUN] [{idx}/5] Would create folder and files for: {company_str} - {title}")
+                continue
+
             os.makedirs(folder_path, exist_ok=True)
             
             # 1. 写 JD 解析文件
@@ -173,4 +193,11 @@ def create_job_doc():
         if 'conn' in locals(): conn.close()
 
 if __name__ == "__main__":
-    create_job_doc()
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate tailored resumes for high-score jobs.")
+    parser.add_argument("--model", type=str, default="glm5", help="Model to use for scoring (gemma3, qwen3_8b, glm5)")
+    parser.add_argument("--threshold", type=int, default=80, help="Minimum score threshold (default 80)")
+    parser.add_argument("--dry-run", action="store_true", help="Run without writing to disk or DB")
+    args = parser.parse_args()
+    
+    create_job_doc(model=args.model, threshold=args.threshold, dry_run=args.dry_run)

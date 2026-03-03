@@ -9,6 +9,7 @@
     "export": "python src/core/obsidian_exporter.py"
   },
   "dependencies": {
+    "dotenv": "^17.3.1",
     "pg": "^8.18.0",
     "puppeteer-core": "^24.37.5"
   }

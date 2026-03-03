@@ -14,14 +14,40 @@ except ImportError:
 
 app = FastAPI(title="Job Dashboard API")
 
-# DB Config from environment variables
+# Helper for strict env loading
+def get_env_strict(key):
+    val = os.getenv(key)
+    if val is None:
+        raise EnvironmentError(f"Missing required environment variable: {key}")
+    return val
+
+# DB Config from environment variables (Strict)
 DB_CONFIG = {
-    "dbname": os.getenv("DB_NAME", "jobs"),
-    "user": os.getenv("DB_USER", "z"),
+    "dbname": get_env_strict("DB_NAME"),
+    "user": get_env_strict("DB_USER"),
     "password": os.getenv("DB_PASSWORD", ""),
-    "host": os.getenv("DB_HOST", "localhost"),
-    "port": int(os.getenv("DB_PORT", 5432))
+    "host": get_env_strict("DB_HOST"),
+    "port": int(get_env_strict("DB_PORT"))
 }
+
+# Connection pooling
+try:
+    from psycopg2 import pool
+    db_pool = pool.SimpleConnectionPool(1, 10, **DB_CONFIG)
+except Exception as e:
+    print(f"Error initializing connection pool: {e}")
+    db_pool = None
+
+def get_db_connection():
+    if db_pool:
+        return db_pool.getconn()
+    return psycopg2.connect(**DB_CONFIG)
+
+def release_db_connection(conn):
+    if db_pool:
+        db_pool.putconn(conn)
+    else:
+        conn.close()
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,12 +74,13 @@ def get_config():
 
 @app.get("/api/jobs")
 def get_jobs(threshold: int = 75, model: str = "glm5"):
+    conn = None
     try:
         # Default to GLM-5 since user wants to simplify
         score_col = "match_score_glm5"
         rationale_col = "rationale_glm5"
         
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(f"""
             SELECT id, title, company, salary, location, 
@@ -85,15 +112,18 @@ def get_jobs(threshold: int = 75, model: str = "glm5"):
             })
             
         cur.close()
-        conn.close()
         return jobs
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            release_db_connection(conn)
 
 @app.post("/api/jobs/{job_id}/feedback")
 def update_feedback(job_id: int, feedback: JobFeedback):
+    conn = None
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("""
             UPDATE liepin_jobs 
@@ -102,10 +132,12 @@ def update_feedback(job_id: int, feedback: JobFeedback):
         """, (feedback.user_score, feedback.user_notes, job_id))
         conn.commit()
         cur.close()
-        conn.close()
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            release_db_connection(conn)
 
 if __name__ == "__main__":
     import uvicorn
