@@ -751,7 +751,7 @@ const JobItem = React.memo(({ job, onUpdate, expandAll, scoreSource = 'glm5' }) 
   };
 
   const getCircles = (val, max) => {
-    const norm = Math.round((val / max) * 5);
+    const norm = Math.max(0, Math.min(5, Math.round((val / max) * 5)));
     return '●'.repeat(norm) + '○'.repeat(5 - norm);
   };
 
@@ -773,7 +773,7 @@ const JobItem = React.memo(({ job, onUpdate, expandAll, scoreSource = 'glm5' }) 
 
         {metrics && (
           <div className="score-line">
-            指标: 硬标 {getCircles(metrics.hard, 20)} | 领域 {getCircles(metrics.domain, 40)} | 技术 {getCircles(metrics.tech, 20)} | 项目 {getCircles(metrics.project, 20)}
+            指标: 硬标 {getCircles(metrics.hard, 100)} | 领域 {getCircles(metrics.domain, 100)} | 技术 {getCircles(metrics.tech, 100)} | 项目 {getCircles(metrics.project, 100)}
           </div>
         )}
 
