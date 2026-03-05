@@ -5,8 +5,16 @@ on:
     branches: [ master, main ]
   workflow_dispatch:
 
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these builds to finish.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   build-and-deploy:
