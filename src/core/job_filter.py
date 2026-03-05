@@ -66,18 +66,20 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Filter jobs based on blocklist and target cities")
     parser.add_argument("--dry-run", action="store_true", help="Run without writing to database")
+    parser.add_argument("--dataset", type=str, choices=["liepin", "boss"], default="liepin", help="Select which job dataset to process")
     args = parser.parse_args()
 
     dry_run = args.dry_run
+    table_name = f"{args.dataset}_jobs"
 
     conn = psycopg2.connect(**DB_CONFIG)
     conn.autocommit = True
     cur = conn.cursor()
     
     # 捞出全库所有岗位进行统一回溯过滤
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, title, company, salary, job_description, location 
-        FROM liepin_jobs 
+        FROM {table_name}
     """)
     jobs = cur.fetchall()
     print(f"找到 {len(jobs)} 个岗位，开始全局极速前置过滤(包含已抓取记录)..." + (" [DRY RUN]" if dry_run else ""))
@@ -110,8 +112,8 @@ def main():
         # 执行拦截
         if reject_reason:
             if not dry_run:
-                cur.execute("""
-                    UPDATE liepin_jobs
+                cur.execute(f"""
+                    UPDATE {table_name}
                     SET job_description = %s, 
                         match_score = 0, rationale = '前置规则过滤',
                         match_score_qwen3_8b = 0, rationale_qwen3_8b = '前置规则过滤',
@@ -124,8 +126,8 @@ def main():
             # 放行：但如果之前被标记为 [FILTERED:]，则需要洗白重置为 NULL，以便后续正常爬取或打分
             if job_desc and str(job_desc).startswith("[FILTERED:"):
                 if not dry_run:
-                    cur.execute("""
-                        UPDATE liepin_jobs
+                    cur.execute(f"""
+                        UPDATE {table_name}
                         SET job_description = NULL, 
                             match_score = NULL, rationale = NULL,
                             match_score_qwen3_8b = NULL, rationale_qwen3_8b = NULL,
@@ -141,10 +143,10 @@ def main():
     print(f" -> 因违禁词命中: {keyword_filtered}")
     print(f" -> 因非北京地区命中: {location_filtered}")
     
-    cur.execute("SELECT COUNT(*) FROM liepin_jobs WHERE job_description IS NULL")
+    cur.execute(f"SELECT COUNT(*) FROM {table_name} WHERE job_description IS NULL")
     remaining_count = cur.fetchone()[0]
     
-    cur.execute("SELECT COUNT(*) FROM liepin_jobs WHERE job_description IS NOT NULL AND job_description NOT LIKE '[FILTERED:%%'")
+    cur.execute(f"SELECT COUNT(*) FROM {table_name} WHERE job_description IS NOT NULL AND job_description NOT LIKE '[FILTERED:%%'")
     fetched_count = cur.fetchone()[0]
     
     print(f"\n✅ 进度报告: 当前数据库中还有 {remaining_count} 个优质岗位等待爬取正文。")

@@ -104,50 +104,64 @@ async function fetchJobDescription(page, url) {
             else if (document.querySelector('.apply-stop-title') || document.querySelector('.stop-apply-header') || document.querySelector('.stop-job-apply-operate') || pageTitle.includes('暂停招聘') || pageTitle.includes('下线')) {
                 offlineMsg = '[UNAVAILABLE: OFFLINE] 该职位已下线或暂停招聘';
                 desc = offlineMsg;
-            } else {
-                // 猎聘详情页一般是用 section 包含职位描述
-                const descEl = document.querySelector('dd[data-selector="job-intro-content"]');
-                if (descEl) {
-                    desc = descEl.innerText.trim();
-                } else {
-                    // 备用选择器 1
-                    const altEl = document.querySelector('.job-intro dd, .job-description, .job-item-title ~ .content');
-                    if (altEl) desc = altEl.innerText.trim();
-                    else {
-                        // 备用选择器 2：暴力查找包含“职位描述”或“岗位职责”的节点
-                        const sections = Array.from(document.querySelectorAll('section, div, dl'));
-                        for (let sec of sections) {
-                            const text = sec.innerText || '';
-                            if ((text.includes('职位描述') || text.includes('岗位职责')) && text.length > 10 && text.length < 5000) {
-                                desc = text.trim();
-                                break;
-                            }
-                        }
-                    }
-                }
+            }
+            // 查找主岗位信息容器
+            const jobHeader = document.querySelector('.job-apply-container, .job-apply-content');
+            const jobIntro = document.querySelector('.job-intro-container');
+            const companyAside = document.querySelector('.company-info-container, aside');
+
+            // 1. 解析描述 (Job Description)
+            // 优先找标准的 [data-selector="job-intro-content"]
+            const descEl = document.querySelector('dd[data-selector="job-intro-content"]');
+            if (descEl) {
+                desc = descEl.innerText.trim();
+            } else if (jobIntro) {
+                // 仅在主职位介绍容器内查找，避免误抓侧边栏或底部
+                const subDesc = jobIntro.querySelector('dd, .paragraph, .content');
+                if (subDesc) desc = subDesc.innerText.trim();
             }
 
+            // 2. 解析公司名 (Company Name)
             let comp = '';
-            // 公司名通常在特定的 a 标签或 h3 标签中
-            const compEl = document.querySelector('.company-info-container .company-name, .job-title-info .company-name');
+            const compEl = (companyAside ? companyAside.querySelector('.name, .company-name') : null) ||
+                document.querySelector('.job-title-info .company-name');
             if (compEl) {
                 comp = compEl.innerText.trim();
             }
 
+            // 3. 解析地点 (Location)
             let loc = '';
-            // 地点通常在 city-info 或 job-properties 中
-            const locEl = document.querySelector('.job-properties span:first-child, .city-info, .job-title-info .city');
+            const locEl = (jobHeader ? jobHeader.querySelector('.job-properties span:first-child') : null) ||
+                document.querySelector('.city-info, .job-title-info .city');
             if (locEl) {
                 loc = locEl.innerText.trim();
             }
 
+            // 4. 解析更新时间 (Update Time)
             let updateTime = '';
-            const timeEl = document.querySelector('.time-factor-wrap, .update-time, time');
+            const timeEl = (jobHeader ? jobHeader.querySelector('.update-time') : null) ||
+                document.querySelector('.time-factor-wrap, time');
             if (timeEl) {
                 updateTime = timeEl.innerText.replace('更新时间：', '').replace('更新', '').trim();
             }
 
-            return { desc, company: comp, location: loc, updateTime: updateTime, isOffline: !!offlineMsg, isBlock: !!blockMsg };
+            // 5. 解析职位名 (Job Title) - CLI 模式专用覆盖
+            let title = '';
+            const titleEl = (jobHeader ? jobHeader.querySelector('.name') : null) ||
+                document.querySelector('.job-title-info .job-title');
+            if (titleEl) {
+                title = titleEl.innerText.trim();
+            }
+
+            // 6. 解析薪资 (Salary)
+            let salary = '';
+            const salaryEl = (jobHeader ? jobHeader.querySelector('.salary') : null) ||
+                document.querySelector('.job-title-info .salary');
+            if (salaryEl) {
+                salary = salaryEl.innerText.trim();
+            }
+
+            return { desc, title, company: comp, location: loc, salary, updateTime: updateTime, isOffline: !!offlineMsg, isBlock: !!blockMsg };
         });
 
         // 取消了截图逻辑
@@ -179,6 +193,8 @@ if (unknownArgs.length > 0) {
 const dryRun = process.argv.includes('--dry-run') || process.argv.includes('-d');
 const minScoreArg = process.argv.find(arg => !arg.startsWith('-') && !isNaN(parseInt(arg)));
 const minScore = minScoreArg ? parseInt(minScoreArg, 10) : null;
+const cliUrls = process.argv.slice(2).filter(arg => arg.startsWith('http'));
+const isCliMode = cliUrls.length > 0;
 
 async function main() {
     console.log(`\n======================================================`);
@@ -243,32 +259,48 @@ async function main() {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
 
     while (true) {
-        // 获取所有存在空缺字段且本轮尚未抓取过的岗位。
-        const res = await dbClient.query(`
-    SELECT id, title, company, location, link, job_description, 
-           match_score, match_score_qwen3_8b, match_score_glm5, update_time
-    FROM liepin_jobs 
-    WHERE (
-            job_description IS NULL
-          ) OR (
-            job_description NOT LIKE '[UNAVAILABLE%' AND 
-            job_description NOT LIKE '[FILTERED%' AND
-            (GREATEST(COALESCE(match_score, 0), COALESCE(match_score_qwen3_8b, 0), COALESCE(match_score_glm5, 0)) >= $2 OR $2 IS NULL) AND 
-            (
-                update_time IS NULL OR 
-                company IS NULL OR company = '' OR
-                location IS NULL OR location = '' OR location = '不限'
-            )
-          )
-      AND NOT (id = ANY($3::int[]))
-    ORDER BY 
-      CASE WHEN job_description IS NULL THEN 0 ELSE 1 END,
-      GREATEST(COALESCE(match_score, 0), COALESCE(match_score_qwen3_8b, 0), COALESCE(match_score_glm5, 0)) DESC NULLS LAST, 
-      fetched_at DESC 
-    LIMIT $1;
-  `, [BATCH_SIZE, minScore, Array.from(processedIds)]);
+        let jobsToProcess = [];
 
-        const jobsToProcess = res.rows;
+        if (isCliMode) {
+            jobsToProcess = cliUrls.map(url => ({
+                id: null,
+                title: 'CLI URL',
+                company: 'Unknown',
+                location: '',
+                salary: null,
+                link: url,
+                job_description: null,
+                update_time: null
+            }));
+        } else {
+            // 获取所有存在空缺字段且本轮尚未抓取过的岗位。
+            const res = await dbClient.query(`
+        SELECT id, title, company, location, salary, link, job_description, 
+               match_score, match_score_qwen3_8b, match_score_glm5, update_time
+        FROM liepin_jobs 
+        WHERE (
+                job_description IS NULL
+              ) OR (
+                job_description NOT LIKE '[UNAVAILABLE%' AND 
+                job_description NOT LIKE '[FILTERED%' AND
+                (GREATEST(COALESCE(match_score, 0), COALESCE(match_score_qwen3_8b, 0), COALESCE(match_score_glm5, 0)) >= $2 OR $2 IS NULL) AND 
+                (
+                    update_time IS NULL OR 
+                    company IS NULL OR company = '' OR
+                    location IS NULL OR location = '' OR location = '不限' OR
+                    salary IS NULL OR salary = ''
+                )
+              )
+          AND NOT (id = ANY($3::int[]))
+        ORDER BY 
+          CASE WHEN job_description IS NULL THEN 0 ELSE 1 END,
+          GREATEST(COALESCE(match_score, 0), COALESCE(match_score_qwen3_8b, 0), COALESCE(match_score_glm5, 0)) DESC NULLS LAST, 
+          fetched_at DESC 
+        LIMIT $1;
+      `, [BATCH_SIZE, minScore, Array.from(processedIds)]);
+
+            jobsToProcess = res.rows;
+        }
 
         if (jobsToProcess.length === 0) {
             console.log(`没有找到需要抓取详情的职位 (或者都已抓取完)。`);
@@ -297,6 +329,7 @@ async function main() {
             let currentDesc = job.job_description;
             let currentCompany = job.company;
             let currentLocation = job.location;
+            let currentSalary = job.salary;
             let currentUpdate = job.update_time;
 
             if (data && (data.isBlock || data.isOffline || (data.desc && data.desc.length > 10))) {
@@ -320,9 +353,13 @@ async function main() {
                     currentDesc = data.desc;
                 }
 
-                if ((!currentCompany || currentCompany.trim() === '') && data.company) {
+                if ((!currentCompany || currentCompany.trim() === '' || currentCompany === 'Unknown') && data.company) {
                     currentCompany = data.company;
                     updates.push(`补充公司名`);
+                }
+
+                if (isCliMode && job.title === 'CLI URL' && data.title) {
+                    job.title = data.title;
                 }
 
                 if ((!currentLocation || currentLocation.trim() === '' || currentLocation === '不限') && data.location) {
@@ -330,19 +367,36 @@ async function main() {
                     updates.push(`补充地点`);
                 }
 
+                if ((!currentSalary || currentSalary.trim() === '') && data.salary) {
+                    currentSalary = data.salary;
+                    updates.push(`补充薪资: ${currentSalary}`);
+                }
+
                 if (data.updateTime && data.updateTime !== currentUpdate) {
                     currentUpdate = data.updateTime;
                     updates.push(`更新时间: ${currentUpdate}`);
                 }
 
-                if (!dryRun) {
+                if (!dryRun && !isCliMode) {
                     await dbClient.query(`
                         UPDATE liepin_jobs 
-                        SET job_description = $1, company = $2, location = $3, update_time = $4
-                        WHERE id = $5;
-                    `, [currentDesc, currentCompany, currentLocation, currentUpdate || null, job.id]);
+                        SET job_description = $1, company = $2, location = $3, update_time = $4, salary = $5, fetched_at = NOW()
+                        WHERE id = $6;
+                    `, [currentDesc, currentCompany, currentLocation, currentUpdate || null, currentSalary, job.id]);
+                } else if (!dryRun && isCliMode) {
+                    await dbClient.query(`
+                        INSERT INTO liepin_jobs (link, job_description, company, location, update_time, title, salary, fetched_at) 
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                        ON CONFLICT (link) DO UPDATE SET 
+                            job_description = EXCLUDED.job_description,
+                            company = EXCLUDED.company,
+                            location = EXCLUDED.location,
+                            update_time = EXCLUDED.update_time,
+                            salary = EXCLUDED.salary,
+                            fetched_at = EXCLUDED.fetched_at;
+                    `, [job.link, currentDesc, currentCompany, currentLocation, currentUpdate || null, job.title, currentSalary]);
                 } else {
-                    console.log(`[DRY RUN] Updated data: ${currentCompany} | ${currentLocation} | ${currentUpdate}`);
+                    console.log(`[DRY RUN] Updated data: ${currentCompany} | ${currentLocation} | ${currentSalary} | ${currentUpdate}`);
                 }
                 successCount++;
 
@@ -354,6 +408,8 @@ async function main() {
                         'score_glm5': job.match_score_glm5,
                         company: currentCompany,
                         title: job.title,
+                        salary: currentSalary,
+                        grab_time: new Date().toLocaleString('zh-CN', { hour12: false }),
                         msg: updates.join(' | ') + (dryRun ? ' (MOCK)' : '')
                     });
                 }
@@ -369,6 +425,11 @@ async function main() {
             }
         }
 
+        if (isCliMode) {
+            console.log("CLI模式单次爬取结束。");
+            break;
+        }
+
         console.log(`\n本批次处理完毕。休息 10 秒后处理下一批...`);
         await sleep(10000);
         if (dryRun && successCount > 0) break; // Limit dry run to one batch
@@ -380,7 +441,7 @@ async function main() {
 
     if (updateReport.length > 0) {
         console.log(`▶ 本次运行综合报告：`);
-        console.table(updateReport, ['id', 'score_gemma', 'score_qwen', 'score_glm5', 'company', 'title', 'msg']);
+        console.table(updateReport, ['id', 'score_gemma', 'score_qwen', 'score_glm5', 'company', 'title', 'salary', 'grab_time', 'msg']);
         console.log(`共更新了 ${updateReport.length} 个岗位信息。`);
     } else {
         console.log(`▶ 本次运行综合报告：\n未发现任何信息缺失或状态变更的岗位。`);

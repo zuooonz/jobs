@@ -1,4 +1,4 @@
-name: ai_core
+name: agent
 channels:
   - defaults
   - conda-forge

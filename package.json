@@ -1,8 +1,9 @@
 {
   "scripts": {
-    "fetch": "node src/scrapers/fetch-list.js",
-    "fetch:p2": "node src/scrapers/fetch-list-p2.js",
-    "fetch:details": "node src/scrapers/fetch-details.js",
+    "fetch:liepin": "node src/scrapers/fetch-list.js",
+    "fetch:boss": "node src/scrapers/boss-fetch-list.js",
+    "fetch:details:liepin": "node src/scrapers/fetch-details.js",
+    "fetch:details:boss": "node src/scrapers/boss-fetch-details.js",
     "filter": "python src/core/job_filter.py",
     "evaluate": "python src/core/job_evaluator.py",
     "tailor": "python src/core/resume_tailor.py",
@@ -11,6 +12,9 @@
   "dependencies": {
     "dotenv": "^17.3.1",
     "pg": "^8.18.0",
-    "puppeteer-core": "^24.37.5"
+    "puppeteer-core": "^24.37.5",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "tesseract.js": "^7.0.0"
   }
 }

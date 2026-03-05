@@ -171,28 +171,33 @@ async function runOneKeywordAndSaveToDB(page, dbClient, keyword) {
       const fetchedAt = new Date();
 
       for (const job of validJobs) {
-        try {
-          // ON CONFLICT (link) 会基于唯一链接更新最新抓到的字段(地点、公司)，这恰好弥补以前抓错或者漏掉的值。
-          const query = `
-            INSERT INTO liepin_jobs (keyword, fetched_at, title, location, salary, company, link)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (link) DO UPDATE SET 
-              fetched_at = EXCLUDED.fetched_at,
-              keyword = EXCLUDED.keyword,
-              title = EXCLUDED.title,
-              salary = EXCLUDED.salary,
-              company = EXCLUDED.company,
-              location = EXCLUDED.location;
-          `;
-          const values = [keyword, fetchedAt, job.title, job.location, job.salary, job.company, job.link];
-          await dbClient.query(query, values);
+        if (!dryRun) {
+          try {
+            // ON CONFLICT (link) 会基于唯一链接更新最新抓到的字段(地点、公司)，这恰好弥补以前抓错或者漏掉的值。
+            const query = `
+                INSERT INTO liepin_jobs (keyword, fetched_at, title, location, salary, company, link)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (link) DO UPDATE SET 
+                  fetched_at = EXCLUDED.fetched_at,
+                  keyword = EXCLUDED.keyword,
+                  title = EXCLUDED.title,
+                  salary = EXCLUDED.salary,
+                  company = EXCLUDED.company,
+                  location = EXCLUDED.location;
+              `;
+            const values = [keyword, fetchedAt, job.title, job.location, job.salary, job.company, job.link];
+            await dbClient.query(query, values);
+            pageSaved++;
+          } catch (dbErr) {
+            console.error(`[DB Error] 插入/更新失败 ${job.title}:`, dbErr.message);
+          }
+        } else {
+          console.log(`[DRY RUN] Detected job: ${job.company} - ${job.title} | Link: ${job.link}`);
           pageSaved++;
-        } catch (dbErr) {
-          console.error(`[DB Error] 插入/更新失败 ${job.title}:`, dbErr.message);
         }
       }
       totalSaved += pageSaved;
-      console.log(`[${keyword}] 第${pageNum}页成功入库/更新了 ${pageSaved} 个北京职位 (过滤掉了 ${rawJobs.length - pageSaved} 个非北京)`);
+      console.log(`[${keyword}] 第${pageNum}页${dryRun ? '模拟' : '成功入库'}了 ${pageSaved} 个北京职位 (过滤掉了 ${rawJobs.length - pageSaved} 个非北京)`);
     }
 
     // 假设一页通常抓到30-40个，如果极少，可能是到底了，但保守起见看是否真的0
@@ -256,9 +261,17 @@ async function main() {
   // 安全越界保护: 如果你删了词库导致变短
   startIdx = startIdx % keywords.length;
 
-  const picked = [];
-  for (let i = 0; i < batchSize; i++) {
-    picked.push(keywords[(startIdx + i) % keywords.length]);
+  const cliKeywords = process.argv.slice(2).filter(arg => !arg.startsWith('-'));
+  const isCliMode = cliKeywords.length > 0;
+
+  let picked = [];
+  if (isCliMode) {
+    picked = cliKeywords;
+    console.log(`[配置] 检测到命令行参数，将不使用默认进度规划。直接抓取。`);
+  } else {
+    for (let i = 0; i < batchSize; i++) {
+      picked.push(keywords[(startIdx + i) % keywords.length]);
+    }
   }
 
   console.log(`\n==================================================`);
@@ -285,7 +298,7 @@ async function main() {
     }
   }
 
-  if (!dryRun) {
+  if (!dryRun && !isCliMode) {
     // 保存最新状态
     state.nextKeywordIndex = (startIdx + batchSize) % keywords.length;
     state.lastRunAt = new Date().toISOString();

@@ -231,6 +231,7 @@ function App() {
 
       if (statusFilter === 'rated') return job._isRated;
       if (statusFilter === 'unrated') return !job._isRated;
+      if (statusFilter === 'has_notes') return !!job.user_notes;
       if (statusFilter === 'contacted') return job.user_notes && job.user_notes.startsWith('【已联系】');
       return true;
     });
@@ -352,13 +353,13 @@ function App() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>人工评分</span>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  {['all', 'unrated', 'rated', 'contacted'].map(f => (
+                  {['all', 'unrated', 'rated', 'has_notes', 'contacted'].map(f => (
                     <button
                       key={f}
                       className={`filter-btn-mobile ${statusFilter === f ? 'active' : ''}`}
                       onClick={() => setStatusFilter(f)}
                     >
-                      {f === 'all' ? '全部' : f === 'unrated' ? '未处理' : f === 'rated' ? '已评分' : '已联系'}
+                      {f === 'all' ? '全部' : f === 'unrated' ? '未处理' : f === 'rated' ? '已评分' : f === 'has_notes' ? '已备注' : '已联系'}
                     </button>
                   ))}
                 </div>
@@ -444,14 +445,14 @@ function App() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <span className="filter-group-label" style={{ margin: 0, fontSize: '0.7rem' }}>人工评分</span>
                 <div className="filter-tabs" style={{ marginTop: 0, gap: '16px' }}>
-                  {['all', 'unrated', 'rated', 'contacted'].map(f => (
+                  {['all', 'unrated', 'rated', 'has_notes', 'contacted'].map(f => (
                     <div
                       key={f}
                       className={`filter-tab ${statusFilter === f ? 'active' : ''}`}
                       onClick={() => setStatusFilter(f)}
                       style={{ fontSize: '0.8rem', padding: '4px 0' }}
                     >
-                      {f === 'all' ? '全部' : f === 'unrated' ? '未处理' : f === 'rated' ? '已评分' : '已联系'}
+                      {f === 'all' ? '全部' : f === 'unrated' ? '未处理' : f === 'rated' ? '已评分' : f === 'has_notes' ? '已备注' : '已联系'}
                     </div>
                   ))}
                 </div>

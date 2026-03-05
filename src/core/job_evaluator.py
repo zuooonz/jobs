@@ -149,7 +149,7 @@ def evaluate_job(client, model_name, profile_text, job_title, job_company, job_s
                 print(f"LLM 评估出错: {e}")
                 return None, None
 
-def apply_static_filters_globally(conn, dry_run=False):
+def apply_static_filters_globally(conn, dry_run=False, table_name="liepin_jobs"):
     """
     全量扫描并同步所有模型的静态过滤分数。
     """
@@ -162,7 +162,7 @@ def apply_static_filters_globally(conn, dry_run=False):
         cols_to_select.append(MODEL_CONFIGS[key]["score_col"])
         cols_to_select.append(MODEL_CONFIGS[key]["rationale_col"])
     
-    query = f"SELECT {', '.join(cols_to_select)} FROM liepin_jobs WHERE job_description IS NOT NULL"
+    query = f"SELECT {', '.join(cols_to_select)} FROM {table_name} WHERE job_description IS NOT NULL"
     cur.execute(query)
     all_jobs = cur.fetchall()
     
@@ -224,7 +224,7 @@ def apply_static_filters_globally(conn, dry_run=False):
                 set_clauses.append(f"{MODEL_CONFIGS[key]['score_col']} = %s")
                 set_clauses.append(f"{MODEL_CONFIGS[key]['rationale_col']} = %s")
             
-            update_query = f"UPDATE liepin_jobs SET {', '.join(set_clauses)} WHERE id = %s"
+            update_query = f"UPDATE {table_name} SET {', '.join(set_clauses)} WHERE id = %s"
             
             import psycopg2.extras
             psycopg2.extras.execute_batch(cur, update_query, updates)
@@ -237,11 +237,13 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Run without writing to database")
     parser.add_argument("--test-run", type=int, default=0, help="Evaluate N jobs for testing (implies --dry-run)")
     parser.add_argument("--model", type=str, default="glm5", choices=["gemma3", "qwen3_8b", "glm5"], help="Select evaluation model")
+    parser.add_argument("--dataset", type=str, choices=["liepin", "boss"], default="liepin", help="Select which job dataset to process")
     args = parser.parse_args()
 
     # Aliasing --test-run logic to use dry-run internally
     dry_run = args.dry_run or args.test_run > 0
     batch_limit = args.test_run if args.test_run > 0 else 500
+    table_name = f"{args.dataset}_jobs"
 
     config = MODEL_CONFIGS[args.model]
 
@@ -274,14 +276,14 @@ def main():
 
     try:
         # 1. 同步全量静态过滤
-        static_updates = apply_static_filters_globally(conn, dry_run=dry_run)
+        static_updates = apply_static_filters_globally(conn, dry_run=dry_run, table_name=table_name)
         
         cur = conn.cursor()
         # 2. 查找所选模型尚未评估的岗位
         score_col = config["score_col"]
         cur.execute(f"""
             SELECT id, title, company, salary, job_description 
-            FROM liepin_jobs 
+            FROM {table_name}
             WHERE job_description IS NOT NULL AND {score_col} IS NULL 
             ORDER BY fetched_at DESC LIMIT %s
         """, (batch_limit,))
@@ -305,7 +307,7 @@ def main():
                     print(f" -> 分数: {score}")
                     if not dry_run:
                         try:
-                            cur.execute(f"UPDATE liepin_jobs SET {score_col} = %s, {config['rationale_col']} = %s WHERE id = %s", (score, reason, job_id))
+                            cur.execute(f"UPDATE {table_name} SET {score_col} = %s, {config['rationale_col']} = %s WHERE id = %s", (score, reason, job_id))
                             conn.commit()
                             success_count += 1
                         except Exception as e:

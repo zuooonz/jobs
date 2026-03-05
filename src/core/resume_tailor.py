@@ -104,7 +104,7 @@ def generate_tailored_resume(client, profile_text, job_title, job_company, job_d
     except Exception as e:
         return f"AI 生成简历失败: {e}"
 
-def create_job_doc(model="glm5", threshold=80, dry_run=False):
+def create_job_doc(model="glm5", threshold=80, dry_run=False, table_name="liepin_jobs"):
     try:
         model_map = {
             "gemma3": ("match_score", "rationale"),
@@ -120,7 +120,7 @@ def create_job_doc(model="glm5", threshold=80, dry_run=False):
             SELECT id, title, company, salary, location, 
                    {score_col}, {rationale_col}, 
                    link, update_time, job_description
-            FROM liepin_jobs
+            FROM {table_name}
             WHERE {score_col} >= %s
               AND job_description NOT LIKE '[UNAVAILABLE%%'
             ORDER BY {score_col} DESC, fetched_at DESC
@@ -198,6 +198,8 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="glm5", help="Model to use for scoring (gemma3, qwen3_8b, glm5)")
     parser.add_argument("--threshold", type=int, default=80, help="Minimum score threshold (default 80)")
     parser.add_argument("--dry-run", action="store_true", help="Run without writing to disk or DB")
+    parser.add_argument("--dataset", type=str, choices=["liepin", "boss"], default="liepin", help="Select which job dataset to process")
     args = parser.parse_args()
     
-    create_job_doc(model=args.model, threshold=args.threshold, dry_run=args.dry_run)
+    table_name = f"{args.dataset}_jobs"
+    create_job_doc(model=args.model, threshold=args.threshold, dry_run=args.dry_run, table_name=table_name)

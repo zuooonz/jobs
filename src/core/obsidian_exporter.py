@@ -126,7 +126,7 @@ def render_job_block(f, job, include_jd=False):
     
     f.write("\n---\n\n")
 
-def export_top_jobs(threshold=80, include_jd=False, model="glm5", dry_run=False):
+def export_top_jobs(threshold=80, include_jd=False, model="glm5", dry_run=False, table_name="liepin_jobs"):
     try:
         model_map = {
             "gemma3": ("match_score", "rationale"),
@@ -142,7 +142,7 @@ def export_top_jobs(threshold=80, include_jd=False, model="glm5", dry_run=False)
             SELECT id, title, company, salary, location, 
                    {score_col}, {rationale_col},
                    link, update_time, job_description
-            FROM liepin_jobs
+            FROM {table_name}
             WHERE {score_col} >= %s
               AND job_description NOT LIKE '[UNAVAILABLE%%'
             ORDER BY {score_col} DESC, fetched_at DESC
@@ -240,6 +240,8 @@ if __name__ == "__main__":
     parser.add_argument("--include-jd", "-j", action="store_true", help="是否包含岗位描述")
     parser.add_argument("--model", type=str, default="glm5", help="评分模型 (gemma3, qwen3_8b, glm5)")
     parser.add_argument("--dry-run", action="store_true", help="Run without writing files")
+    parser.add_argument("--dataset", type=str, choices=["liepin", "boss"], default="liepin", help="Select which job dataset to process")
     args = parser.parse_args()
     
-    export_top_jobs(args.threshold, args.include_jd, model=args.model, dry_run=args.dry_run)
+    table_name = f"{args.dataset}_jobs"
+    export_top_jobs(args.threshold, args.include_jd, model=args.model, dry_run=args.dry_run, table_name=table_name)
