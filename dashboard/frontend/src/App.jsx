@@ -54,6 +54,9 @@ const Icons = {
   ),
   Mail: () => (
     <svg width="1.2em" height="1.2em" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>
+  ),
+  Search: () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
   )
 };
 
@@ -70,13 +73,14 @@ function App() {
   const [activeCluster, setActiveCluster] = useState("");
   const [activeTier, setActiveTier] = useState("");
   const [statusFilter, setStatusFilter] = useState('all');
-  const [scoreThreshold, setScoreThreshold] = useState(75);
+  const [scoreThreshold, setScoreThreshold] = useState(70);
   const [scoreSource, setScoreSource] = useState('glm5');
   const [sortOrder, setSortOrder] = useState('desc');
   const [expandAll, setExpandAll] = useState(window.innerWidth > 768);
   const [connectionError, setConnectionError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const contentRef = useRef(null);
   const jobListRef = useRef(null);
@@ -226,6 +230,15 @@ function App() {
 
       if (!(clusterMatch && tierMatch)) return false;
 
+      // Search matching
+      if (searchQuery) {
+        const query = searchQuery.toLowerCase();
+        const matchesSearch = (job.title || "").toLowerCase().includes(query) ||
+          (job.company || "").toLowerCase().includes(query) ||
+          (job.jd || "").toLowerCase().includes(query);
+        if (!matchesSearch) return false;
+      }
+
       // Client-side filtering for Demo mode (since backend doesn't handle the slider in demo)
       if (isDemo && (job.score || 0) < scoreThreshold) return false;
 
@@ -241,7 +254,7 @@ function App() {
       if (sortOrder === 'desc') return (b.score || 0) - (a.score || 0);
       return (a.score || 0) - (b.score || 0);
     });
-  }, [processedJobs, activeCluster, activeTier, statusFilter, sortOrder, isDemo, scoreThreshold]);
+  }, [processedJobs, activeCluster, activeTier, statusFilter, sortOrder, isDemo, scoreThreshold, searchQuery]);
 
   // Handle local feedback updates
   const handleLocalUpdate = useCallback((jobId, newScore, newNotes) => {
@@ -329,6 +342,22 @@ function App() {
             <div style={{ padding: '0 16px', marginBottom: '16px', fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 700 }}>展示设置</div>
 
             <div className="filter-group" style={{ padding: '0 16px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {/* Mobile Search Input */}
+              <div className="search-container">
+                <Icons.Search />
+                <input
+                  type="text"
+                  placeholder="搜索职位、公司或关键词..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="search-input"
+                />
+                {searchQuery && (
+                  <button className="search-clear" onClick={() => setSearchQuery("")}>
+                    <Icons.Close />
+                  </button>
+                )}
+              </div>
               {/* Mobile Score Filter */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -417,9 +446,27 @@ function App() {
               border: '1px solid rgba(255, 255, 255, 0.05)',
               display: 'flex',
               alignItems: 'center',
-              gap: '32px',
+              gap: '24px',
               flexWrap: 'wrap'
             }}>
+              {/* Search Box */}
+              <div className="search-container">
+                <Icons.Search />
+                <input
+                  type="text"
+                  placeholder="搜索职位、公司..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="search-input"
+                />
+                {searchQuery && (
+                  <button className="search-clear" onClick={() => setSearchQuery("")}>
+                    <Icons.Close />
+                  </button>
+                )}
+              </div>
+
+              <div style={{ width: '1px', height: '16px', background: 'var(--border)', opacity: 0.2 }}></div>
               {/* Score Slider */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <span className="filter-group-label" style={{ margin: 0, fontSize: '0.7rem', textTransform: 'none', letterSpacing: 'normal' }}>模型评分</span>

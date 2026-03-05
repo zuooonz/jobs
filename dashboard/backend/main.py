@@ -73,7 +73,7 @@ def get_config():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/jobs")
-def get_jobs(threshold: int = 75, model: str = "glm5"):
+def get_jobs(threshold: int = 70, model: str = "glm5"):
     conn = None
     try:
         # Default to GLM-5 since user wants to simplify
